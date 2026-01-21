@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import CoreLocation
 
 // MARK: - Festival Data Models
 
@@ -14,6 +15,9 @@ struct FestivalData: Codable {
     let festival: FestivalInfo
     let stages: [Stage]
     let sets: [ScheduledSet]
+    let customChannels: [CustomChannel]?
+    let mapBounds: MapBounds?
+    let pointsOfInterest: [PointOfInterest]?
 }
 
 struct FestivalInfo: Codable {
@@ -23,6 +27,11 @@ struct FestivalInfo: Codable {
     let gatesOpen: String
     let musicStart: String
     let musicEnd: String
+    let timezone: String?
+    
+    var timezoneIdentifier: String {
+        timezone ?? "America/Los_Angeles"
+    }
 }
 
 struct FestivalDates: Codable {
@@ -35,9 +44,60 @@ struct Stage: Codable, Identifiable {
     let name: String
     let description: String
     let color: String
+    let geohash: String?
+    let latitude: Double?
+    let longitude: Double?
     
     var swiftUIColor: Color {
         Color(hex: color) ?? .gray
+    }
+    
+    var coordinate: CLLocationCoordinate2D? {
+        guard let lat = latitude, let lon = longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+    
+    /// Channel name for this stage (e.g., "#lands-end")
+    var channelName: String {
+        "#\(id)"
+    }
+}
+
+struct CustomChannel: Codable, Identifiable {
+    let id: String
+    let name: String
+    let description: String
+    let icon: String
+    let color: String
+    
+    var swiftUIColor: Color {
+        Color(hex: color) ?? .gray
+    }
+}
+
+struct MapBounds: Codable {
+    let northEast: Coordinate
+    let southWest: Coordinate
+    
+    struct Coordinate: Codable {
+        let latitude: Double
+        let longitude: Double
+        
+        var clCoordinate: CLLocationCoordinate2D {
+            CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+    }
+}
+
+struct PointOfInterest: Codable, Identifiable {
+    let id: String
+    let name: String
+    let icon: String
+    let latitude: Double
+    let longitude: Double
+    
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 }
 
@@ -48,26 +108,28 @@ struct ScheduledSet: Codable, Identifiable {
     let day: String
     let start: String
     let end: String
+    let genre: String?
     
     /// Parse start time as Date for the given day
-    func startDate() -> Date? {
-        parseDateTime(day: day, time: start)
+    func startDate(timezone: String = "America/Los_Angeles") -> Date? {
+        parseDateTime(day: day, time: start, timezone: timezone)
     }
     
     /// Parse end time as Date for the given day
-    func endDate() -> Date? {
-        parseDateTime(day: day, time: end)
+    func endDate(timezone: String = "America/Los_Angeles") -> Date? {
+        parseDateTime(day: day, time: end, timezone: timezone)
     }
     
     /// Check if this set is currently playing
-    func isNowPlaying(currentDate: Date = Date()) -> Bool {
-        guard let start = startDate(), let end = endDate() else { return false }
+    func isNowPlaying(currentDate: Date = Date(), timezone: String = "America/Los_Angeles") -> Bool {
+        guard let start = startDate(timezone: timezone), 
+              let end = endDate(timezone: timezone) else { return false }
         return currentDate >= start && currentDate < end
     }
     
     /// Check if this set is coming up within the next N minutes
-    func isUpcoming(within minutes: Int = 30, currentDate: Date = Date()) -> Bool {
-        guard let start = startDate() else { return false }
+    func isUpcoming(within minutes: Int = 30, currentDate: Date = Date(), timezone: String = "America/Los_Angeles") -> Bool {
+        guard let start = startDate(timezone: timezone) else { return false }
         let threshold = currentDate.addingTimeInterval(TimeInterval(minutes * 60))
         return start > currentDate && start <= threshold
     }
@@ -82,10 +144,10 @@ struct ScheduledSet: Codable, Identifiable {
         return "\(formatter.string(from: startDate)) - \(formatter.string(from: endDate))"
     }
     
-    private func parseDateTime(day: String, time: String) -> Date? {
+    private func parseDateTime(day: String, time: String, timezone: String) -> Date? {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        formatter.timeZone = TimeZone(identifier: "America/Los_Angeles")
+        formatter.timeZone = TimeZone(identifier: timezone)
         return formatter.date(from: "\(day) \(time)")
     }
 }
@@ -99,6 +161,7 @@ extension Color {
         
         var rgb: UInt64 = 0
         guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
+        guard hexSanitized.count == 6 else { return nil }
         
         let r = Double((rgb & 0xFF0000) >> 16) / 255.0
         let g = Double((rgb & 0x00FF00) >> 8) / 255.0
@@ -136,6 +199,11 @@ class FestivalScheduleManager: ObservableObject {
         self.isLoaded = true
     }
     
+    /// Festival timezone
+    var timezone: String {
+        festivalData?.festival.timezoneIdentifier ?? "America/Los_Angeles"
+    }
+    
     /// Get all unique days from the schedule
     var days: [String] {
         guard let data = festivalData else { return [] }
@@ -147,7 +215,7 @@ class FestivalScheduleManager: ObservableObject {
         guard let data = festivalData else { return [] }
         return data.sets
             .filter { $0.day == day }
-            .sorted { ($0.startDate() ?? .distantPast) < ($1.startDate() ?? .distantPast) }
+            .sorted { ($0.startDate(timezone: timezone) ?? .distantPast) < ($1.startDate(timezone: timezone) ?? .distantPast) }
     }
     
     /// Get sets for a specific day and stage
@@ -159,7 +227,7 @@ class FestivalScheduleManager: ObservableObject {
     var nowPlaying: [ScheduledSet] {
         guard let data = festivalData else { return [] }
         let now = Date()
-        return data.sets.filter { $0.isNowPlaying(currentDate: now) }
+        return data.sets.filter { $0.isNowPlaying(currentDate: now, timezone: timezone) }
     }
     
     /// Get upcoming sets within the next 30 minutes
@@ -167,13 +235,35 @@ class FestivalScheduleManager: ObservableObject {
         guard let data = festivalData else { return [] }
         let now = Date()
         return data.sets
-            .filter { $0.isUpcoming(within: 30, currentDate: now) }
-            .sorted { ($0.startDate() ?? .distantPast) < ($1.startDate() ?? .distantPast) }
+            .filter { $0.isUpcoming(within: 30, currentDate: now, timezone: timezone) }
+            .sorted { ($0.startDate(timezone: timezone) ?? .distantPast) < ($1.startDate(timezone: timezone) ?? .distantPast) }
     }
     
     /// Get stage by ID
     func stage(for id: String) -> Stage? {
         festivalData?.stages.first { $0.id == id }
+    }
+    
+    /// Get custom channels
+    var customChannels: [CustomChannel] {
+        festivalData?.customChannels ?? []
+    }
+    
+    /// Get points of interest
+    var pointsOfInterest: [PointOfInterest] {
+        festivalData?.pointsOfInterest ?? []
+    }
+    
+    /// Get nearest stage to a location
+    func nearestStage(to location: CLLocation) -> Stage? {
+        festivalData?.stages
+            .compactMap { stage -> (Stage, CLLocationDistance)? in
+                guard let coord = stage.coordinate else { return nil }
+                let stageLocation = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+                return (stage, location.distance(from: stageLocation))
+            }
+            .min { $0.1 < $1.1 }?
+            .0
     }
     
     /// Format day string for display
