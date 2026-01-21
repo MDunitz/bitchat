@@ -670,7 +670,7 @@ struct ContentView: View {
     }
     
     private func handleOpenURL(_ url: URL) {
-        guard url.scheme == "bitchat" else { return }
+        guard url.scheme == "festivusmestivus" else { return }
         switch url.host {
         case "user":
             let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -1201,7 +1201,7 @@ struct ContentView: View {
     
     private var mainHeaderView: some View {
         HStack(spacing: 0) {
-            Text(verbatim: "bitchat/")
+            Text(verbatim: "FM/")
                 .font(.bitchatSystem(size: 18, weight: .medium, design: .monospaced))
                 .foregroundColor(textColor)
                 .onTapGesture(count: 3) {
