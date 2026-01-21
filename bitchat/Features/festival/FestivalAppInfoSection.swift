@@ -1,9 +1,11 @@
 //
 // FestivalAppInfoSection.swift
-// bitchat
+// Festivus Mestivus
 //
-// Festival mode toggle section for AppInfoView
-// Add this section to AppInfoView's infoContent VStack
+// Festival mode UI - built on top of bitchat
+// Original bitchat: https://github.com/permissionlesstech/bitchat
+//
+// This is free and unencumbered software released into the public domain.
 //
 
 import SwiftUI
@@ -16,7 +18,7 @@ struct FestivalAppInfoSection: View {
     @ObservedObject var scheduleManager = FestivalScheduleManager.shared
     
     private var textColor: Color {
-        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+        colorScheme == .dark ? Color(red: 0.4, green: 0.4, blue: 0.7) : Color(red: 0.102, green: 0.102, blue: 0.306)
     }
     
     private var secondaryTextColor: Color {
