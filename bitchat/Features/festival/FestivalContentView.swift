@@ -34,12 +34,14 @@ struct FestivalMainView: View {
     
     enum FestivalTab: String, CaseIterable {
         case schedule = "Schedule"
+        case channels = "Channels"
         case chat = "Mesh Chat"
         case info = "Info"
         
         var icon: String {
             switch self {
             case .schedule: return "calendar"
+            case .channels: return "antenna.radiowaves.left.and.right"
             case .chat: return "bubble.left.and.bubble.right"
             case .info: return "info.circle"
             }
@@ -64,6 +66,8 @@ struct FestivalMainView: View {
                 switch selectedTab {
                 case .schedule:
                     FestivalScheduleView()
+                case .channels:
+                    FestivalChannelsView()
                 case .chat:
                     ContentView()
                 case .info:
