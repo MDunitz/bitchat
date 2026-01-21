@@ -188,6 +188,9 @@ struct AppInfoView: View {
 
                 FeatureRow(info: Strings.Privacy.panic)
             }
+            
+            // Festival Mode
+            FestivalAppInfoSection()
         }
         .padding()
     }
