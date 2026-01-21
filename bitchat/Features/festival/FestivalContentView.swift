@@ -1,8 +1,11 @@
 //
 // FestivalContentView.swift
-// bitchat
+// Festivus Mestivus
 //
-// Wrapper view that switches between normal chat and festival mode
+// Festival mode UI - built on top of bitchat
+// Original bitchat: https://github.com/permissionlesstech/bitchat
+//
+// This is free and unencumbered software released into the public domain.
 //
 
 import SwiftUI
@@ -44,11 +47,11 @@ struct FestivalMainView: View {
     }
     
     private var backgroundColor: Color {
-        colorScheme == .dark ? Color.black : Color.white
+        colorScheme == .dark ? Color(red: 0.08, green: 0.08, blue: 0.15) : Color(red: 0.97, green: 0.97, blue: 0.99)
     }
     
     private var textColor: Color {
-        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+        colorScheme == .dark ? Color(red: 0.4, green: 0.4, blue: 0.7) : Color(red: 0.102, green: 0.102, blue: 0.306)
     }
     
     var body: some View {
@@ -127,11 +130,11 @@ struct FestivalInfoView: View {
     @ObservedObject var scheduleManager = FestivalScheduleManager.shared
     
     private var backgroundColor: Color {
-        colorScheme == .dark ? Color.black : Color.white
+        colorScheme == .dark ? Color(red: 0.08, green: 0.08, blue: 0.15) : Color(red: 0.97, green: 0.97, blue: 0.99)
     }
     
     private var textColor: Color {
-        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+        colorScheme == .dark ? Color(red: 0.4, green: 0.4, blue: 0.7) : Color(red: 0.102, green: 0.102, blue: 0.306)
     }
     
     var body: some View {
