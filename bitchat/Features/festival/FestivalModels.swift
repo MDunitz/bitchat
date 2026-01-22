@@ -13,11 +13,17 @@ import CoreLocation
 
 struct FestivalData: Codable {
     let festival: FestivalInfo
+    let tabs: [FestivalTab]?
     let stages: [Stage]
     let sets: [ScheduledSet]
     let customChannels: [CustomChannel]?
     let mapBounds: MapBounds?
     let pointsOfInterest: [PointOfInterest]?
+    
+    /// Get configured tabs, or default tabs if none specified
+    var configuredTabs: [FestivalTab] {
+        tabs ?? FestivalTab.defaultTabs
+    }
 }
 
 struct FestivalInfo: Codable {
@@ -37,6 +43,36 @@ struct FestivalInfo: Codable {
 struct FestivalDates: Codable {
     let start: String
     let end: String
+}
+
+// MARK: - Configurable Tab Model
+
+/// Tab configuration from JSON - allows festivals to customize which tabs appear
+struct FestivalTab: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let icon: String
+    let type: TabType
+    
+    enum TabType: String, Codable {
+        case schedule   // Show FestivalScheduleView
+        case channels   // Show FestivalChannelsView
+        case chat       // Show main chat ContentView
+        case map        // Show FestivalMapView
+        case info       // Show FestivalInfoView
+        case friends    // Show FriendMapView (location sharing)
+        case custom     // Future: custom webview or embedded content
+    }
+    
+    /// Default tabs if none specified in JSON
+    static var defaultTabs: [FestivalTab] {
+        [
+            FestivalTab(id: "schedule", name: "Schedule", icon: "calendar", type: .schedule),
+            FestivalTab(id: "channels", name: "Channels", icon: "antenna.radiowaves.left.and.right", type: .channels),
+            FestivalTab(id: "chat", name: "Mesh Chat", icon: "bubble.left.and.bubble.right", type: .chat),
+            FestivalTab(id: "info", name: "Info", icon: "info.circle", type: .info)
+        ]
+    }
 }
 
 struct Stage: Codable, Identifiable {
@@ -202,6 +238,11 @@ class FestivalScheduleManager: ObservableObject {
     /// Festival timezone
     var timezone: String {
         festivalData?.festival.timezoneIdentifier ?? "America/Los_Angeles"
+    }
+    
+    /// Get configured tabs for this festival
+    var tabs: [FestivalTab] {
+        festivalData?.configuredTabs ?? FestivalTab.defaultTabs
     }
     
     /// Get all unique days from the schedule
