@@ -26,26 +26,20 @@ struct FestivalContentView: View {
     }
 }
 
-/// Festival mode main view with bottom tab navigation
+/// Festival mode main view with configurable bottom tab navigation
+/// Tabs are defined in FestivalSchedule.json
 struct FestivalMainView: View {
     @EnvironmentObject var viewModel: ChatViewModel
     @Environment(\.colorScheme) var colorScheme
-    @State private var selectedTab: FestivalTab = .schedule
+    @ObservedObject var scheduleManager = FestivalScheduleManager.shared
+    @State private var selectedTabId: String = "schedule"
     
-    enum FestivalTab: String, CaseIterable {
-        case schedule = "Schedule"
-        case channels = "Channels"
-        case chat = "Mesh Chat"
-        case info = "Info"
-        
-        var icon: String {
-            switch self {
-            case .schedule: return "calendar"
-            case .channels: return "antenna.radiowaves.left.and.right"
-            case .chat: return "bubble.left.and.bubble.right"
-            case .info: return "info.circle"
-            }
-        }
+    private var tabs: [FestivalTab] {
+        scheduleManager.tabs
+    }
+    
+    private var selectedTab: FestivalTab? {
+        tabs.first { $0.id == selectedTabId }
     }
     
     private var backgroundColor: Color {
@@ -63,25 +57,61 @@ struct FestivalMainView: View {
             
             // Content based on selected tab
             Group {
-                switch selectedTab {
-                case .schedule:
-                    FestivalScheduleView()
-                case .channels:
-                    FestivalChannelsView()
-                case .chat:
-                    ContentView()
-                case .info:
-                    FestivalInfoView()
+                if let tab = selectedTab {
+                    tabContent(for: tab)
+                } else {
+                    // Fallback: select first tab
+                    Text("Loading...")
+                        .onAppear {
+                            if let first = tabs.first {
+                                selectedTabId = first.id
+                            }
+                        }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
             Divider()
             
-            // Tab bar
+            // Dynamic tab bar
             tabBar
         }
         .background(backgroundColor)
+        .onAppear {
+            // Default to first tab if current selection is invalid
+            if !tabs.contains(where: { $0.id == selectedTabId }), let first = tabs.first {
+                selectedTabId = first.id
+            }
+        }
+    }
+    
+    /// Render content for a tab based on its type
+    @ViewBuilder
+    private func tabContent(for tab: FestivalTab) -> some View {
+        switch tab.type {
+        case .schedule:
+            FestivalScheduleView()
+        case .channels:
+            FestivalChannelsView()
+        case .chat:
+            ContentView()
+        case .map:
+            FestivalMapTabView()
+        case .info:
+            FestivalInfoView()
+        case .friends:
+            FriendMapView()
+        case .custom:
+            // Placeholder for custom content (could be webview, etc.)
+            VStack {
+                Image(systemName: "sparkles")
+                    .font(.largeTitle)
+                    .foregroundColor(textColor)
+                Text(tab.name)
+                    .font(.system(.headline, design: .monospaced))
+                    .foregroundColor(textColor)
+            }
+        }
     }
     
     private var festivalBanner: some View {
@@ -109,15 +139,15 @@ struct FestivalMainView: View {
     
     private var tabBar: some View {
         HStack(spacing: 0) {
-            ForEach(FestivalTab.allCases, id: \.self) { tab in
-                Button(action: { selectedTab = tab }) {
+            ForEach(tabs) { tab in
+                Button(action: { selectedTabId = tab.id }) {
                     VStack(spacing: 4) {
                         Image(systemName: tab.icon)
                             .font(.system(size: 20))
-                        Text(tab.rawValue)
+                        Text(tab.name)
                             .font(.system(.caption2, design: .monospaced))
                     }
-                    .foregroundColor(selectedTab == tab ? textColor : .secondary)
+                    .foregroundColor(selectedTabId == tab.id ? textColor : .secondary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
                 }
