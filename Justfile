@@ -1,9 +1,9 @@
-# BitChat macOS Build Justfile
+# FestMest macOS Build Justfile
 # Handles temporary modifications needed to build and run on macOS
 
 # Default recipe - shows available commands
 default:
-    @echo "BitChat macOS Build Commands:"
+    @echo "FestMest macOS Build Commands:"
     @echo "  just run     - Build and run the macOS app"
     @echo "  just build   - Build the macOS app only"
     @echo "  just clean   - Clean build artifacts and restore original files"
@@ -46,13 +46,13 @@ patch-for-macos: backup
 
 # Build the macOS app
 build: #check generate
-    @echo "Building BitChat for macOS..."
-    @xcodebuild -project bitchat.xcodeproj -scheme "bitchat (macOS)" -configuration Debug CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" build
+    @echo "Building FestMest for macOS..."
+    @xcodebuild -project bitchat.xcodeproj -scheme "FestMest (macOS)" -configuration Debug CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" build
 
 # Run the macOS app
 run: build
-    @echo "Launching BitChat..."
-    @find ~/Library/Developer/Xcode/DerivedData -name "bitchat.app" -path "*/Debug/*" -not -path "*/Index.noindex/*" | head -1 | xargs -I {} open "{}"
+    @echo "Launching FestMest..."
+    @find ~/Library/Developer/Xcode/DerivedData -name "FestMest.app" -path "*/Debug/*" -not -path "*/Index.noindex/*" | head -1 | xargs -I {} open "{}"
 
 # Clean build artifacts and restore original files
 clean: restore
@@ -70,12 +70,12 @@ clean: restore
 # Quick run without cleaning (for development)
 dev-run: check
     @echo "Quick development build..."
-    @xcodebuild -project bitchat.xcodeproj -scheme "bitchat_macOS" -configuration Debug CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" build
-    @find ~/Library/Developer/Xcode/DerivedData -name "bitchat.app" -path "*/Debug/*" -not -path "*/Index.noindex/*" | head -1 | xargs -I {} open "{}"
+    @xcodebuild -project bitchat.xcodeproj -scheme "FestMest_macOS" -configuration Debug CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" build
+    @find ~/Library/Developer/Xcode/DerivedData -name "FestMest.app" -path "*/Debug/*" -not -path "*/Index.noindex/*" | head -1 | xargs -I {} open "{}"
 
 # Show app info
 info:
-    @echo "BitChat - Decentralized Mesh Messaging"
+    @echo "FestMest - Decentralized Mesh Messaging"
     @echo "======================================"
     @echo "• Native macOS SwiftUI app"
     @echo "• Bluetooth LE mesh networking"
