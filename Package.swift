@@ -4,7 +4,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "bitchat",
+    name: "FestMest",
     defaultLocalization: "en",
     platforms: [
         .iOS(.v16),
@@ -12,8 +12,8 @@ let package = Package(
     ],
     products: [
         .executable(
-            name: "bitchat",
-            targets: ["bitchat"]
+            name: "FestMest",
+            targets: ["FestMest"]
         ),
     ],
     dependencies:[
@@ -23,7 +23,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "bitchat",
+            name: "FestMest",
             dependencies: [
                 .product(name: "P256K", package: "swift-secp256k1"),
                 .product(name: "BitLogger", package: "BitLogger"),
@@ -36,15 +36,16 @@ let package = Package(
                 "bitchat.entitlements",
                 "bitchat-macOS.entitlements",
                 "LaunchScreen.storyboard",
-                "ViewModels/Extensions/README.md"
+                "ViewModels/Extensions/README.md",
+                "BitchatApp.swift"  // Excluded - using FestMestApp.swift instead
             ],
             resources: [
                 .process("Localizable.xcstrings")
             ]
         ),
         .testTarget(
-            name: "bitchatTests",
-            dependencies: ["bitchat"],
+            name: "FestMestTests",
+            dependencies: ["FestMest"],
             path: "bitchatTests",
             exclude: [
                 "Info.plist",
