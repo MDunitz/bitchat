@@ -3,6 +3,7 @@
 // bitchat
 //
 // Service for creating and managing festival groups with invite-chain auth
+// Uses local caching for O(1) membership verification after first check
 //
 
 import Foundation
@@ -40,8 +41,20 @@ final class FestivalGroupManager: ObservableObject {
     /// My invite chains for groups I'm a member of (by group ID)
     private var myChains: [String: InviteChain] = [:]
     
-    /// Cached membership epochs for optimization
-    private var epochs: [String: MembershipEpoch] = [:]
+    // MARK: - Membership Cache (Key Performance Optimization)
+    
+    /// Cache of verified members per group
+    /// Key: groupId, Value: Set of pubkeys verified as members
+    /// This provides O(1) lookups after first verification
+    private var verifiedMembersCache: [String: Set<String>] = [:]
+    
+    /// Cache of verified invite chains per group
+    /// Key: groupId, Value: Dictionary of pubkey -> their verified InviteChain
+    /// Allows re-verification without re-fetching chain data
+    private var verifiedChainsCache: [String: [String: InviteChain]] = [:]
+    
+    /// Timestamp of last revocation per group (for cache invalidation)
+    private var lastRevocationTime: [String: Date] = [:]
     
     private var cancellables = Set<AnyCancellable>()
     
@@ -110,6 +123,9 @@ final class FestivalGroupManager: ObservableObject {
         // Creator has an implicit empty chain (they are the root)
         myChains[id] = InviteChain(groupId: id, memberPubkey: signer.pubkey, chain: [])
         
+        // Pre-cache creator as verified member
+        verifiedMembersCache[id] = [signer.pubkey]
+        
         return group
     }
     
@@ -119,7 +135,7 @@ final class FestivalGroupManager: ObservableObject {
             throw FestivalGroupError.encryptionNotConfigured
         }
         
-        var event = try group.toNostrEvent(signer: signer)
+        let event = try group.toNostrEvent(signer: signer)
         // Sign the event (implementation depends on NostrIdentity integration)
         // event = try event.sign(with: signer)
         
@@ -247,6 +263,16 @@ final class FestivalGroupManager: ObservableObject {
         // Store my chain
         myChains[invite.groupId] = inviteChain
         
+        // Cache myself as verified
+        var verifiedMembers = verifiedMembersCache[invite.groupId] ?? []
+        verifiedMembers.insert(signer.pubkey)
+        verifiedMembersCache[invite.groupId] = verifiedMembers
+        
+        // Cache my chain
+        var chainsCache = verifiedChainsCache[invite.groupId] ?? [:]
+        chainsCache[signer.pubkey] = inviteChain
+        verifiedChainsCache[invite.groupId] = chainsCache
+        
         // Add to joined groups
         if !joinedGroups.contains(where: { $0.id == group.id }) {
             joinedGroups.append(group)
@@ -308,6 +334,10 @@ final class FestivalGroupManager: ObservableObject {
         groupRevocations.append(revocation)
         revocationsByGroup[groupId] = groupRevocations
         
+        // IMPORTANT: Invalidate the membership cache for this group
+        // This forces re-verification of all members
+        invalidateCache(for: groupId)
+        
         return revocation
     }
     
@@ -341,60 +371,128 @@ final class FestivalGroupManager: ObservableObject {
         return false
     }
     
-    // MARK: - Membership Verification
+    // MARK: - Membership Verification (with Caching)
     
     /// Check if a pubkey is a valid member of a group
+    /// Uses cache for O(1) lookups after first verification
     func isMember(pubkey: String, groupId: String) -> Bool {
         guard let group = groups[groupId] else { return false }
         
-        // Creator is always a member
+        // Creator is always a member (no verification needed)
         if pubkey == group.creatorPubkey { return true }
         
-        // Check epochs first (O(1) if we have a recent epoch)
-        if let epoch = epochs[groupId], epoch.isMember(pubkey) {
-            // Also verify not revoked since epoch
-            let recentRevocations = revocationsByGroup[groupId]?.filter {
-                $0.createdAt > epoch.createdAt
-            } ?? []
-            if !recentRevocations.contains(where: { $0.revokedPubkey == pubkey }) {
-                return true
+        // Fast path: Check cache first - O(1)
+        if let verifiedMembers = verifiedMembersCache[groupId],
+           verifiedMembers.contains(pubkey) {
+            return true
+        }
+        
+        // Slow path: Verify the chain - O(depth)
+        // This only happens once per member per cache invalidation
+        if verifyAndCacheMembership(pubkey: pubkey, groupId: groupId) {
+            return true
+        }
+        
+        return false
+    }
+    
+    /// Verify a member's chain and cache the result if valid
+    /// Returns true if member is verified, false otherwise
+    private func verifyAndCacheMembership(pubkey: String, groupId: String) -> Bool {
+        guard let group = groups[groupId] else { return false }
+        
+        // Build the invite chain for this pubkey
+        guard let chain = buildInviteChain(for: pubkey, groupId: groupId) else {
+            return false
+        }
+        
+        // Verify the chain
+        let revocations = revocationsByGroup[groupId] ?? []
+        guard chain.verify(
+            group: group,
+            revocations: revocations,
+            signatureVerifier: signatureVerifier
+        ) != nil else {
+            return false
+        }
+        
+        // Cache the verified member
+        var verifiedMembers = verifiedMembersCache[groupId] ?? []
+        verifiedMembers.insert(pubkey)
+        verifiedMembersCache[groupId] = verifiedMembers
+        
+        // Cache the chain for potential re-verification
+        var chainsCache = verifiedChainsCache[groupId] ?? [:]
+        chainsCache[pubkey] = chain
+        verifiedChainsCache[groupId] = chainsCache
+        
+        return true
+    }
+    
+    /// Build an invite chain for a given pubkey by walking back through invites
+    private func buildInviteChain(for pubkey: String, groupId: String) -> InviteChain? {
+        let invites = invitesByGroup[groupId] ?? []
+        
+        // Find the invite where this pubkey is the invitee
+        guard let finalInvite = invites.first(where: { $0.inviteePubkey == pubkey }) else {
+            return nil
+        }
+        
+        // Walk back through parent invites to build the chain
+        var chain: [GroupInvite] = []
+        var currentInvite: GroupInvite? = finalInvite
+        
+        while let inv = currentInvite {
+            chain.insert(inv, at: 0)  // Build from root to leaf
+            
+            if let parentId = inv.parentInviteId {
+                currentInvite = invites.first { $0.id == parentId }
+            } else {
+                currentInvite = nil
             }
         }
         
-        // Otherwise verify the chain
-        // Would need to find and verify their invite chain
-        // For now, check if they have any non-revoked invite
-        let invites = invitesByGroup[groupId] ?? []
-        let revocations = revocationsByGroup[groupId] ?? []
-        let revokedPubkeys = Set(revocations.map { $0.revokedPubkey })
-        
-        // Simple check: they have an invite and aren't revoked
-        let hasInvite = invites.contains { $0.inviteePubkey == pubkey }
-        let isRevoked = revokedPubkeys.contains(pubkey)
-        
-        return hasInvite && !isRevoked
+        return InviteChain(groupId: groupId, memberPubkey: pubkey, chain: chain)
     }
     
-    /// Get all valid members of a group (expensive - use sparingly)
+    /// Invalidate the membership cache for a group
+    /// Called when a revocation is received
+    private func invalidateCache(for groupId: String) {
+        verifiedMembersCache.removeValue(forKey: groupId)
+        verifiedChainsCache.removeValue(forKey: groupId)
+        lastRevocationTime[groupId] = Date()
+        
+        // Re-add creator to cache (always valid)
+        if let group = groups[groupId] {
+            verifiedMembersCache[groupId] = [group.creatorPubkey]
+        }
+    }
+    
+    /// Get all valid members of a group
+    /// Note: This verifies all members, so it populates the cache
     func getMembers(groupId: String) -> [String] {
         guard let group = groups[groupId] else { return [] }
-        
-        let invites = invitesByGroup[groupId] ?? []
-        let revocations = revocationsByGroup[groupId] ?? []
-        let revokedPubkeys = Set(revocations.map { $0.revokedPubkey })
         
         var members = Set<String>()
         members.insert(group.creatorPubkey)
         
+        let invites = invitesByGroup[groupId] ?? []
+        
+        // Check each invitee
         for invite in invites {
-            // Check if invitee and everyone in their chain is not revoked
-            if !revokedPubkeys.contains(invite.inviteePubkey) &&
-               !revokedPubkeys.contains(invite.inviterPubkey) {
+            if isMember(pubkey: invite.inviteePubkey, groupId: groupId) {
                 members.insert(invite.inviteePubkey)
             }
         }
         
         return Array(members)
+    }
+    
+    /// Get cache statistics for debugging/monitoring
+    func getCacheStats(groupId: String) -> (cached: Int, total: Int) {
+        let cached = verifiedMembersCache[groupId]?.count ?? 0
+        let total = (invitesByGroup[groupId]?.count ?? 0) + 1  // +1 for creator
+        return (cached, total)
     }
     
     // MARK: - Messaging
@@ -522,6 +620,10 @@ final class FestivalGroupManager: ObservableObject {
             revocationsByGroup[revocation.groupId] = groupRevocations
         }
         
+        // CRITICAL: Invalidate cache when revocation arrives
+        // This ensures revoked members are re-verified
+        invalidateCache(for: revocation.groupId)
+        
         // If I'm revoked, remove from joined groups
         if revocation.revokedPubkey == signatureProvider?.pubkey {
             joinedGroups.removeAll { $0.id == revocation.groupId }
@@ -533,13 +635,13 @@ final class FestivalGroupManager: ObservableObject {
     }
     
     private func handleIncomingMessage(_ event: NostrEvent) {
-        // Verify sender is a member
+        // Verify sender is a member (uses cache - O(1) after first check)
         guard let groupTag = event.tags.first(where: { $0.first == "group" }),
               groupTag.count > 1 else { return }
         
         let groupId = groupTag[1]
         guard isMember(pubkey: event.pubkey, groupId: groupId) else {
-            // Sender not authorized
+            // Sender not authorized - drop message
             return
         }
         
