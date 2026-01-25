@@ -1,8 +1,16 @@
+//
+// AppInfoView.swift
+// FestMest
+//
+// App information, settings, and privacy disclosures
+//
+
 import SwiftUI
 
 struct AppInfoView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.colorScheme) var colorScheme
+    @ObservedObject private var networkService = NetworkActivationService.shared
     
     private var backgroundColor: Color {
         colorScheme == .dark ? Color.black : Color.white
@@ -189,10 +197,380 @@ struct AppInfoView: View {
                 FeatureRow(info: Strings.Privacy.panic)
             }
             
+            // Network & Privacy Settings
+            NetworkPrivacySection()
+            
             // Festival Mode
             FestivalAppInfoSection()
+            
+            // Data & Third Parties
+            DataDisclosureSection()
+            
+            // About & Attribution
+            AboutSection()
         }
         .padding()
+    }
+}
+
+// MARK: - Network & Privacy Settings Section
+
+struct NetworkPrivacySection: View {
+    @Environment(\.colorScheme) var colorScheme
+    @ObservedObject private var networkService = NetworkActivationService.shared
+    
+    private var textColor: Color {
+        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+    }
+    
+    private var secondaryTextColor: Color {
+        colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader("NETWORK SETTINGS")
+            
+            // Tor Toggle
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: Binding(
+                    get: { networkService.userTorEnabled },
+                    set: { networkService.setUserTorEnabled($0) }
+                )) {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "network.badge.shield.half.filled")
+                            .font(.system(size: 20))
+                            .foregroundColor(textColor)
+                            .frame(width: 30)
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Tor Network")
+                                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                                .foregroundColor(textColor)
+                            
+                            Text("Route internet traffic through Tor to hide your IP address from Nostr relays")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(secondaryTextColor)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .tint(textColor)
+                
+                // Status indicator
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(networkService.userTorEnabled ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    
+                    Text(networkService.userTorEnabled 
+                         ? "Your IP is hidden from relays" 
+                         : "Relays can see your IP address")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(secondaryTextColor)
+                }
+                .padding(.leading, 42)
+            }
+            .padding()
+            .background(textColor.opacity(0.05))
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(textColor.opacity(0.2), lineWidth: 1)
+            )
+        }
+    }
+}
+
+// MARK: - Data Disclosure Section
+
+struct DataDisclosureSection: View {
+    @Environment(\.colorScheme) var colorScheme
+    @State private var isExpanded = false
+    
+    private var textColor: Color {
+        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+    }
+    
+    private var secondaryTextColor: Color {
+        colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
+    }
+    
+    private var warningColor: Color {
+        colorScheme == .dark ? Color.orange : Color.orange
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader("DATA & THIRD PARTIES")
+            
+            // Internet Features Warning
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(warningColor)
+                        .frame(width: 30)
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("When Using Internet Features")
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundColor(textColor)
+                        
+                        Text("Location channels, distant private messages, and festival groups use third-party Nostr relays when internet is available.")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(secondaryTextColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                
+                // Expandable details
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        // What relays see
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Relays CAN see:")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundColor(warningColor)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                BulletPoint("Your public key (not your real identity)")
+                                BulletPoint("Approximate location (~150m) when using location channels")
+                                BulletPoint("Encrypted message content (unreadable)")
+                                BulletPoint("Timestamps")
+                            }
+                        }
+                        
+                        Divider()
+                            .background(textColor.opacity(0.3))
+                        
+                        // What relays cannot see
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Relays CANNOT see:")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.green)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                BulletPoint("Your real name, email, or phone number")
+                                BulletPoint("Decrypted message content")
+                                BulletPoint("Your exact GPS location")
+                                BulletPoint("Your IP address (when Tor is enabled)")
+                            }
+                        }
+                        
+                        Divider()
+                            .background(textColor.opacity(0.3))
+                        
+                        // Relay list
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Default Relays:")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundColor(textColor)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(defaultRelays, id: \.self) { relay in
+                                    Text(relay)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(secondaryTextColor)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Text(isExpanded ? "Hide Details" : "Show Details")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(textColor)
+                }
+                .tint(textColor)
+            }
+            .padding()
+            .background(warningColor.opacity(0.1))
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(warningColor.opacity(0.3), lineWidth: 1)
+            )
+            
+            // Location disclosure
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "location.circle")
+                        .font(.system(size: 20))
+                        .foregroundColor(textColor)
+                        .frame(width: 30)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Location Data")
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundColor(textColor)
+                        
+                        Text("Location is only accessed when you use location channels or friend sharing. Your GPS is converted to an approximate area (~150m) before being shared. Location is never stored or tracked in the background.")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(secondaryTextColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding()
+            .background(textColor.opacity(0.05))
+            .cornerRadius(8)
+            
+            // Privacy Policy Link
+            Link(destination: URL(string: "https://github.com/MDunitz/festmest/blob/main/PRIVACY_POLICY.md")!) {
+                HStack {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 16))
+                    Text("View Full Privacy Policy")
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    Spacer()
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 12))
+                }
+                .foregroundColor(textColor)
+                .padding()
+                .background(textColor.opacity(0.05))
+                .cornerRadius(8)
+            }
+        }
+    }
+    
+    private var defaultRelays: [String] {
+        [
+            "relay.damus.io",
+            "nos.lol", 
+            "relay.primal.net",
+            "offchain.pub",
+            "nostr21.com"
+        ]
+    }
+}
+
+// MARK: - About Section
+
+struct AboutSection: View {
+    @Environment(\.colorScheme) var colorScheme
+    
+    private var textColor: Color {
+        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+    }
+    
+    private var secondaryTextColor: Color {
+        colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader("ABOUT")
+            
+            VStack(alignment: .leading, spacing: 12) {
+                // Attribution
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.red)
+                        .frame(width: 30)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Built on bitchat")
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundColor(textColor)
+                        
+                        Text("FestMest is built on top of bitchat, an open-source Bluetooth mesh chat protocol created by Jack Dorsey. Thank you to the bitchat team for making decentralized communication accessible to everyone.")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(secondaryTextColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                
+                // Links
+                VStack(spacing: 8) {
+                    Link(destination: URL(string: "https://github.com/permissionlesstech/bitchat")!) {
+                        HStack {
+                            Image(systemName: "link")
+                                .font(.system(size: 14))
+                            Text("Original bitchat Project")
+                                .font(.system(size: 12, design: .monospaced))
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 10))
+                        }
+                        .foregroundColor(textColor)
+                    }
+                    
+                    Link(destination: URL(string: "https://github.com/MDunitz/festmest")!) {
+                        HStack {
+                            Image(systemName: "link")
+                                .font(.system(size: 14))
+                            Text("FestMest Source Code")
+                                .font(.system(size: 12, design: .monospaced))
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 10))
+                        }
+                        .foregroundColor(textColor)
+                    }
+                }
+                .padding(.leading, 42)
+                
+                // License
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "doc.plaintext")
+                        .font(.system(size: 20))
+                        .foregroundColor(textColor)
+                        .frame(width: 30)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Open Source")
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundColor(textColor)
+                        
+                        Text("Released into the public domain under The Unlicense. You are free to use, modify, and distribute this software.")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(secondaryTextColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding()
+            .background(textColor.opacity(0.05))
+            .cornerRadius(8)
+            
+            // Version
+            HStack {
+                Spacer()
+                Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(secondaryTextColor)
+                Spacer()
+            }
+            .padding(.top, 8)
+        }
+    }
+}
+
+// MARK: - Helper Views
+
+struct BulletPoint: View {
+    let text: String
+    @Environment(\.colorScheme) var colorScheme
+    
+    private var secondaryTextColor: Color {
+        colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
+    }
+    
+    init(_ text: String) {
+        self.text = text
+    }
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("•")
+                .font(.system(size: 12, design: .monospaced))
+            Text(text)
+                .font(.system(size: 11, design: .monospaced))
+        }
+        .foregroundColor(secondaryTextColor)
     }
 }
 
@@ -212,6 +590,10 @@ struct SectionHeader: View {
     
     init(_ title: LocalizedStringKey) {
         self.title = title
+    }
+    
+    init(_ title: String) {
+        self.title = LocalizedStringKey(title)
     }
     
     var body: some View {
