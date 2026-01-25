@@ -50,44 +50,57 @@ During each session, FestMest temporarily maintains:
 - Routing information for message delivery
 - Cached messages for offline peers (12 hours max)
 
-## Internet Features (Nostr Protocol)
+## ⚠️ Third-Party Data Sharing (Important)
 
-When internet connectivity is available, FestMest can optionally use the Nostr protocol for extended features. **These features only activate when you use them** - the app works fully offline via Bluetooth mesh.
+**When you use internet features, some data is sent to third-party servers.** This section explains exactly what is shared and with whom.
 
-### When Internet Features Are Used
+FestMest works fully offline via Bluetooth mesh. However, certain features require internet connectivity and share data with third-party Nostr relays:
 
-FestMest connects to third-party Nostr relays for:
-- **Location Channels**: Chat with nearby people via geohash-based channels
-- **Private Messages to Distant Friends**: End-to-end encrypted messages to mutual favorites who are not in Bluetooth range
-- **Festival Groups**: User-created group chats with invite-chain authorization
+| Feature | Data Shared | When It's Shared |
+|---------|-------------|------------------|
+| Location Channels | Approximate location (~150m), encrypted messages | When you tap a location channel |
+| Private Messages (distant) | Encrypted messages, your public key | When messaging favorites outside Bluetooth range |
+| Festival Groups | Encrypted messages, group membership | When using group chat features |
 
-### Default Nostr Relays
+### Third-Party Nostr Relays
 
-When internet features are active, FestMest connects to these public relays:
-- wss://relay.damus.io
-- wss://nos.lol
-- wss://relay.primal.net
-- wss://offchain.pub
-- wss://nostr21.com
+When internet features are active, FestMest connects to these **third-party public relays** (not operated by us):
 
-These are third-party services not operated by FestMest. Each relay has its own privacy policy.
+- `wss://relay.damus.io`
+- `wss://nos.lol`
+- `wss://relay.primal.net`
+- `wss://offchain.pub`
+- `wss://nostr21.com`
 
-### What Nostr Relays Can See
+**Each relay is operated by a different third party with their own privacy practices.** We have no control over how they handle data that passes through them.
 
-When using internet features, the following data passes through relays:
+### What Third-Party Relays Receive
 
-**Relays CAN see:**
-- Your ephemeral public key (not linked to your real identity)
-- Approximate location as a geohash tag (~150m precision) when using location channels
-- Encrypted message content (unreadable without your private key)
-- Timestamps of messages
-- Group membership tags (which groups you're in)
+When using internet features, relays receive:
 
-**Relays CANNOT see:**
-- Your real name, phone number, or email (we never collect these)
-- Decrypted message content (end-to-end encrypted)
-- Your exact GPS coordinates (geohash is intentionally imprecise)
-- Your IP address (when Tor is enabled)
+| Data | Details |
+|------|---------|
+| ✅ Public Key | An ephemeral identifier (not your real identity) |
+| ✅ Approximate Location | ~150 meter precision geohash (only for location channels) |
+| ✅ Encrypted Content | Message content encrypted with keys only you and recipient have |
+| ✅ Timestamps | When messages were sent |
+| ✅ IP Address | Your network address (unless Tor is enabled) |
+
+### What Relays Cannot Access
+
+| Data | Why It's Protected |
+|------|-------------------|
+| ❌ Your Identity | We never collect names, emails, or phone numbers |
+| ❌ Message Content | End-to-end encrypted; relays only see ciphertext |
+| ❌ Exact Location | GPS converted to ~150m geohash before sharing |
+| ❌ Your IP (with Tor) | Tor routing hides your IP from relays |
+
+### How to Minimize Data Sharing
+
+1. **Use Bluetooth mesh only**: Disable internet features to share no data with relays
+2. **Enable Tor**: Hides your IP address from relays (enabled by default)
+3. **Avoid location channels**: Use #mesh channel instead to prevent location sharing
+4. **Disable when not needed**: Internet features only activate when you use them
 
 ### Tor Privacy (Optional)
 
@@ -98,30 +111,37 @@ FestMest includes optional Tor integration to protect your IP address from Nostr
 
 When Tor is enabled, relays cannot determine your real IP address or physical location from your network connection.
 
-## Location Features
+## ⚠️ Location Data (Important)
 
-FestMest offers optional location-based features. **Location is never accessed without your explicit permission.**
+**FestMest can access your location, but only when you explicitly use location features.**
 
-### Geohash Location Channels
+### When Location Is Accessed
 
-- Uses your approximate location (~150m precision) to join nearby chat rooms
-- **Opt-in**: Only activates when you grant location permission AND tap a location channel
-- Location data is converted to a geohash (imprecise grid square) before being shared
-- You can revoke location permission at any time in system settings
+| Feature | When Accessed | Precision | Shared With |
+|---------|---------------|-----------|-------------|
+| Location Channels | When you tap a location channel | ~150m (geohash) | Third-party Nostr relays |
+| Friend Location | When you AND a friend both enable sharing | Precise GPS | Only that friend (encrypted) |
 
-### Friend Location Sharing
+### How Location Works
 
-- Share your precise location with mutual favorites only
-- **Double opt-in**: Both you AND your friend must enable sharing
-- Location is end-to-end encrypted between friends
-- Works over Bluetooth mesh (no internet required) or Nostr when online
+1. **You tap a location channel** (e.g., "Nearby" or a stage channel)
+2. **iOS asks for permission** (you can deny)
+3. **If granted**, your GPS coordinates are converted to a **geohash** (~150m grid square)
+4. **The geohash (not GPS)** is sent to Nostr relays to join the channel
 
 ### What We DON'T Do With Location
 
-- We never track your location in the background
-- We never store location history
-- We never share precise location with relays (only ~150m geohash)
-- Location is never used for advertising or profiling
+- ❌ **Never track in background** - Location only accessed when you actively use features
+- ❌ **Never store history** - No location logs are kept
+- ❌ **Never share precise GPS with relays** - Only ~150m geohash
+- ❌ **Never use for advertising** - We have no ads
+- ❌ **Never sell location data** - We don't sell any data
+
+### How to Disable Location
+
+1. **Don't use location channels** - Use #mesh instead
+2. **Revoke permission** - Settings → FestMest → Location → Never
+3. **Location features are 100% optional** - The app works fully without them
 
 ## What Information is Shared
 
