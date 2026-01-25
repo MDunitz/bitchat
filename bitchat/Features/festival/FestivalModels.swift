@@ -61,6 +61,7 @@ struct FestivalTab: Codable, Identifiable, Hashable {
         case map        // Show FestivalMapView
         case info       // Show FestivalInfoView
         case friends    // Show FriendMapView (location sharing)
+        case groups     // Show FestivalGroupsView (user-created groups)
         case custom     // Future: custom webview or embedded content
     }
     
@@ -69,6 +70,7 @@ struct FestivalTab: Codable, Identifiable, Hashable {
         [
             FestivalTab(id: "schedule", name: "Schedule", icon: "calendar", type: .schedule),
             FestivalTab(id: "channels", name: "Channels", icon: "antenna.radiowaves.left.and.right", type: .channels),
+            FestivalTab(id: "groups", name: "Groups", icon: "person.3", type: .groups),
             FestivalTab(id: "chat", name: "Mesh Chat", icon: "bubble.left.and.bubble.right", type: .chat),
             FestivalTab(id: "info", name: "Info", icon: "info.circle", type: .info)
         ]
