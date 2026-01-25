@@ -667,6 +667,146 @@ final class FestivalGroupManager: ObservableObject {
     }
 }
 
+    
+    // MARK: - Messaging
+    
+    /// Current user's pubkey (if configured)
+    var myPubkey: String? {
+        signatureProvider?.pubkey
+    }
+    
+    /// Message subscription handlers by group+channel
+    private var messageHandlers: [String: (GroupMessage) -> Void] = [:]
+    
+    /// Cached messages by group+channel
+    private var messageCache: [String: [GroupMessage]] = [:]
+    
+    /// Load messages for a channel
+    func loadMessages(groupId: String, channelId: String) async -> [GroupMessage] {
+        let key = "\(groupId):\(channelId)"
+        
+        // Return cached if available
+        if let cached = messageCache[key] {
+            return cached
+        }
+        
+        // TODO: Fetch from relay with filter
+        // For now, return empty and rely on subscription
+        return []
+    }
+    
+    /// Subscribe to new messages for a channel
+    func subscribeToGroupMessages(groupId: String, channelId: String, handler: @escaping (GroupMessage) -> Void) {
+        let key = "\(groupId):\(channelId)"
+        messageHandlers[key] = handler
+        
+        // Subscribe to relay for this group's messages
+        subscribeToRelayForMessages(groupId: groupId, channelId: channelId)
+    }
+    
+    /// Send a message to a group channel
+    func sendMessage(groupId: String, channelId: String, content: String, replyTo: String? = nil) async throws -> GroupMessage {
+        guard let signer = signatureProvider else {
+            throw FestivalGroupError.encryptionNotConfigured
+        }
+        
+        // Verify we're a member
+        guard isMember(pubkey: signer.pubkey, groupId: groupId) else {
+            throw FestivalGroupError.notAuthorizedToInvite
+        }
+        
+        let message = GroupMessage(
+            id: UUID().uuidString,
+            groupId: groupId,
+            channelId: channelId,
+            senderPubkey: signer.pubkey,
+            content: content,
+            createdAt: Date(),
+            replyTo: replyTo
+        )
+        
+        // Convert to Nostr event and publish
+        let event = try message.toNostrEvent(signer: signer)
+        try await publishToRelay(event)
+        
+        // Cache locally
+        let key = "\(groupId):\(channelId)"
+        var messages = messageCache[key] ?? []
+        messages.append(message)
+        messageCache[key] = messages
+        
+        return message
+    }
+    
+    // MARK: - Relay Integration
+    
+    private func subscribeToRelayForMessages(groupId: String, channelId: String) {
+        // Create filter for this group's messages
+        let filter = GroupNostrFilter(groupId: groupId)
+        
+        // Subscribe via NostrRelayManager
+        // This would integrate with the existing relay infrastructure
+        Task {
+            await subscribeWithFilter(filter.messageFilter, groupId: groupId, channelId: channelId)
+        }
+    }
+    
+    private func subscribeWithFilter(_ filter: [String: Any], groupId: String, channelId: String) async {
+        // Integration point with NostrRelayManager
+        // The relay manager would call handleIncomingMessage when events arrive
+        
+        // For now, this is a placeholder for the relay subscription
+        // In production, this would:
+        // 1. Connect to the group's relay(s)
+        // 2. Send REQ with the filter
+        // 3. Handle incoming EVENT messages
+    }
+    
+    private func publishToRelay(_ event: NostrEvent) async throws {
+        // Integration point with NostrRelayManager
+        // Would publish the event to the group's relay(s)
+        
+        // For now, placeholder
+        // In production: NostrRelayManager.shared.publish(event)
+    }
+    
+    /// Handle incoming message from relay
+    func handleRelayMessage(_ event: NostrEvent) {
+        guard event.kind == .groupMessage else { return }
+        
+        guard let groupTag = event.tags.first(where: { $0.first == "group" }),
+              groupTag.count > 1,
+              let channelTag = event.tags.first(where: { $0.first == "channel" }),
+              channelTag.count > 1 else { return }
+        
+        let groupId = groupTag[1]
+        let channelId = channelTag[1]
+        
+        // Verify sender is a member
+        guard isMember(pubkey: event.pubkey, groupId: groupId) else {
+            return // Unauthorized sender
+        }
+        
+        do {
+            let message = try GroupMessage.from(event: event)
+            
+            // Cache the message
+            let key = "\(groupId):\(channelId)"
+            var messages = messageCache[key] ?? []
+            if !messages.contains(where: { $0.id == message.id }) {
+                messages.append(message)
+                messageCache[key] = messages
+                
+                // Notify handler
+                messageHandlers[key]?(message)
+            }
+        } catch {
+            print("Failed to parse group message: \(error)")
+        }
+    }
+
+}
+
 // MARK: - Message Payload
 
 struct GroupMessagePayload: Codable {
