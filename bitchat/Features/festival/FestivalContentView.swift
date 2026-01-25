@@ -101,6 +101,10 @@ struct FestivalMainView: View {
             FestivalInfoView()
         case .friends:
             FriendMapView()
+        case .groups:
+            NavigationStack {
+                FestivalGroupsView()
+            }
         case .custom:
             // Placeholder for custom content (could be webview, etc.)
             VStack {
