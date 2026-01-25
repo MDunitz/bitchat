@@ -9,6 +9,16 @@
 import Foundation
 import Combine
 
+// MARK: - Group Event Kinds (Nostr NIP-compatible)
+
+/// Event kind constants for festival groups
+private enum GroupEventKind {
+    static let festivalGroup = 30078    // Replaceable: Group definition
+    static let groupInvite = 30079      // Replaceable: Invite
+    static let groupRevoke = 30080      // Replaceable: Revocation
+    static let groupMessage = 20078     // Ephemeral: Group chat message
+}
+
 /// Manages user-created festival groups and their authorization chains
 @MainActor
 final class FestivalGroupManager: ObservableObject {
@@ -56,6 +66,17 @@ final class FestivalGroupManager: ObservableObject {
     /// Timestamp of last revocation per group (for cache invalidation)
     private var lastRevocationTime: [String: Date] = [:]
     
+    // MARK: - Messaging State
+    
+    /// Message subscription handlers by group+channel
+    private var messageHandlers: [String: (GroupMessage) -> Void] = [:]
+    
+    /// Cached messages by group+channel
+    private var messageCache: [String: [GroupMessage]] = [:]
+    
+    /// Active subscription IDs for cleanup
+    private var activeSubscriptions: [String: String] = [:]  // key -> subscription ID
+    
     private var cancellables = Set<AnyCancellable>()
     
     // MARK: - Initialization
@@ -70,8 +91,12 @@ final class FestivalGroupManager: ObservableObject {
     
     /// Configure with the user's signing identity
     func configure(with identity: NostrIdentity) {
+        self.identity = identity
         self.signatureProvider = SchnorrSignatureProvider(identity: identity)
         refreshMyMemberships()
+        
+        // Subscribe to invites addressed to me
+        subscribeToMyInvites()
     }
     
     // MARK: - Group Creation
@@ -98,7 +123,7 @@ final class FestivalGroupManager: ObservableObject {
         // Default channels if none provided
         let groupChannels = channels.isEmpty ? [
             FestivalGroup.GroupChannel(id: "general", name: "#general", description: "Main chat", icon: "bubble.left.and.bubble.right"),
-            FestivalGroup.GroupChannel(id: "announcements", name: "#announcements", description: "Updates from organizers", icon: "megaphone")
+            FestivalGroup.GroupChannel(id: "meetup", name: "#meetup", description: "Coordinate meetups", icon: "mappin.and.ellipse")
         ] : channels
         
         let group = FestivalGroup(
@@ -120,33 +145,27 @@ final class FestivalGroupManager: ObservableObject {
         groups[id] = group
         myGroups.append(group)
         
-        // Creator has an implicit empty chain (they are the root)
+        // Creator is automatically a member (depth 0, no chain needed)
+        verifiedMembersCache[id] = [signer.pubkey]
         myChains[id] = InviteChain(groupId: id, memberPubkey: signer.pubkey, chain: [])
         
-        // Pre-cache creator as verified member
-        verifiedMembersCache[id] = [signer.pubkey]
+        // Publish to relay
+        Task {
+            do {
+                let event = try group.toNostrEvent(signer: signer)
+                try await publishEvent(event)
+            } catch {
+                print("Failed to publish group: \(error)")
+            }
+        }
         
         return group
     }
     
-    /// Publish a group to Nostr relays
-    func publishGroup(_ group: FestivalGroup, to relayUrls: [String]? = nil) async throws {
-        guard let signer = signatureProvider else {
-            throw FestivalGroupError.encryptionNotConfigured
-        }
-        
-        let event = try group.toNostrEvent(signer: signer)
-        // Sign the event (implementation depends on NostrIdentity integration)
-        // event = try event.sign(with: signer)
-        
-        // Send to relays
-        NostrRelayManager.shared.sendEvent(event, to: relayUrls)
-    }
-    
     // MARK: - Invitations
     
-    /// Create an invite for someone to join a group
-    func createInvite(
+    /// Invite someone to a group (must be a member with invite permission)
+    func invite(
         groupId: String,
         inviteePubkey: String
     ) throws -> GroupInvite {
@@ -158,7 +177,7 @@ final class FestivalGroupManager: ObservableObject {
             throw FestivalGroupError.groupNotFound
         }
         
-        // Check I have authority to invite
+        // Get my chain to determine depth
         guard let myChain = myChains[groupId] else {
             throw FestivalGroupError.notAuthorizedToInvite
         }
@@ -166,7 +185,7 @@ final class FestivalGroupManager: ObservableObject {
         let myDepth = myChain.chain.count
         let newDepth = myDepth + 1
         
-        // Check we won't exceed max depth
+        // Check depth limit
         guard newDepth <= group.maxDepth else {
             throw FestivalGroupError.inviteChainTooDeep
         }
@@ -178,30 +197,23 @@ final class FestivalGroupManager: ObservableObject {
             throw FestivalGroupError.memberAlreadyRevoked
         }
         
+        // Create and sign invite
         let now = Date()
         let parentInviteId = myChain.chain.last?.id
         
-        // Create the invite
-        var invite = GroupInvite(
+        // Build signable data
+        let signableStr = "\(groupId):\(signer.pubkey):\(inviteePubkey):\(Int(now.timeIntervalSince1970)):\(newDepth)"
+        let signableData = signableStr.data(using: .utf8)!
+        let signature = try signer.sign(data: signableData)
+        
+        let invite = GroupInvite(
             groupId: groupId,
             inviterPubkey: signer.pubkey,
             inviteePubkey: inviteePubkey,
             createdAt: now,
-            signature: "",  // Will be set below
+            signature: signature,
             parentInviteId: parentInviteId,
             depth: newDepth
-        )
-        
-        // Sign the invite
-        let signature = try signer.sign(data: invite.signableData)
-        invite = GroupInvite(
-            groupId: invite.groupId,
-            inviterPubkey: invite.inviterPubkey,
-            inviteePubkey: invite.inviteePubkey,
-            createdAt: invite.createdAt,
-            signature: signature,
-            parentInviteId: invite.parentInviteId,
-            depth: invite.depth
         )
         
         // Store locally
@@ -209,10 +221,20 @@ final class FestivalGroupManager: ObservableObject {
         groupInvites.append(invite)
         invitesByGroup[groupId] = groupInvites
         
+        // Publish to relay
+        Task {
+            do {
+                let event = try invite.toNostrEvent(signer: signer)
+                try await publishEvent(event)
+            } catch {
+                print("Failed to publish invite: \(error)")
+            }
+        }
+        
         return invite
     }
     
-    /// Accept an invite and build my chain
+    /// Accept an invite and join a group
     func acceptInvite(_ invite: GroupInvite) throws {
         guard let signer = signatureProvider else {
             throw FestivalGroupError.encryptionNotConfigured
@@ -220,58 +242,26 @@ final class FestivalGroupManager: ObservableObject {
         
         // Verify the invite is for me
         guard invite.inviteePubkey == signer.pubkey else {
-            throw FestivalGroupError.notAuthorizedToInvite
+            throw FestivalGroupError.invalidSignature
         }
         
+        // Build my chain by finding all ancestors
+        let chain = try buildChain(for: invite)
+        
+        // Verify chain is valid
         guard let group = groups[invite.groupId] else {
+            // Fetch group from relay if not cached
+            Task { await fetchGroup(id: invite.groupId) }
             throw FestivalGroupError.groupNotFound
         }
         
-        // Build the chain by walking back through parent invites
-        var chain: [GroupInvite] = []
-        var currentInvite: GroupInvite? = invite
-        
-        while let inv = currentInvite {
-            chain.insert(inv, at: 0)  // Build chain from root to leaf
-            
-            if let parentId = inv.parentInviteId {
-                // Find parent invite
-                let groupInvites = invitesByGroup[invite.groupId] ?? []
-                currentInvite = groupInvites.first { $0.id == parentId }
-            } else {
-                // No parent = this was invited directly by creator
-                currentInvite = nil
-            }
-        }
-        
-        let inviteChain = InviteChain(
-            groupId: invite.groupId,
-            memberPubkey: signer.pubkey,
-            chain: chain
-        )
-        
-        // Verify the chain
         let revocations = revocationsByGroup[invite.groupId] ?? []
-        guard inviteChain.verify(
-            group: group,
-            revocations: revocations,
-            signatureVerifier: signatureVerifier
-        ) != nil else {
+        guard chain.verify(group: group, revocations: revocations, signatureVerifier: signatureVerifier) != nil else {
             throw FestivalGroupError.invalidSignature
         }
         
         // Store my chain
-        myChains[invite.groupId] = inviteChain
-        
-        // Cache myself as verified
-        var verifiedMembers = verifiedMembersCache[invite.groupId] ?? []
-        verifiedMembers.insert(signer.pubkey)
-        verifiedMembersCache[invite.groupId] = verifiedMembers
-        
-        // Cache my chain
-        var chainsCache = verifiedChainsCache[invite.groupId] ?? [:]
-        chainsCache[signer.pubkey] = inviteChain
-        verifiedChainsCache[invite.groupId] = chainsCache
+        myChains[invite.groupId] = chain
         
         // Add to joined groups
         if !joinedGroups.contains(where: { $0.id == group.id }) {
@@ -280,11 +270,44 @@ final class FestivalGroupManager: ObservableObject {
         
         // Remove from pending
         pendingInvites.removeAll { $0.id == invite.id }
+        
+        // Cache myself as verified member
+        var members = verifiedMembersCache[invite.groupId] ?? []
+        members.insert(signer.pubkey)
+        verifiedMembersCache[invite.groupId] = members
+        
+        // Subscribe to group activity
+        subscribeToGroup(groupId: invite.groupId)
     }
     
-    // MARK: - Revocation
+    /// Build the invite chain for an invite by finding ancestors
+    private func buildChain(for invite: GroupInvite) throws -> InviteChain {
+        var chain: [GroupInvite] = []
+        var currentInvite: GroupInvite? = invite
+        
+        while let inv = currentInvite {
+            chain.insert(inv, at: 0) // Build chain from root to leaf
+            
+            if let parentId = inv.parentInviteId {
+                // Find parent invite
+                let groupInvites = invitesByGroup[inv.groupId] ?? []
+                currentInvite = groupInvites.first { $0.id == parentId }
+            } else {
+                // Reached root (creator's direct invite)
+                currentInvite = nil
+            }
+        }
+        
+        guard let signer = signatureProvider else {
+            throw FestivalGroupError.encryptionNotConfigured
+        }
+        
+        return InviteChain(groupId: invite.groupId, memberPubkey: signer.pubkey, chain: chain)
+    }
     
-    /// Revoke someone's access (and everyone they invited)
+    // MARK: - Revocations
+    
+    /// Revoke a member (must be upstream of them in the chain)
     func revoke(
         groupId: String,
         memberPubkey: String,
@@ -298,35 +321,30 @@ final class FestivalGroupManager: ObservableObject {
             throw FestivalGroupError.groupNotFound
         }
         
-        // Check I have authority to revoke
-        // Can revoke if: I'm the creator, or I'm upstream in their chain
-        let isCreator = group.creatorPubkey == signer.pubkey
-        let isUpstream = isInMyDownstream(groupId: groupId, pubkey: memberPubkey)
-        
-        guard isCreator || isUpstream else {
+        // Verify I can revoke this member (I must be upstream)
+        guard canRevoke(revokerPubkey: signer.pubkey, targetPubkey: memberPubkey, groupId: groupId) else {
             throw FestivalGroupError.notAuthorizedToRevoke
         }
         
-        let now = Date()
+        // Check not already revoked
+        let existingRevocations = revocationsByGroup[groupId] ?? []
+        guard !existingRevocations.contains(where: { $0.revokedPubkey == memberPubkey }) else {
+            throw FestivalGroupError.memberAlreadyRevoked
+        }
         
-        var revocation = GroupRevocation(
+        // Create and sign revocation
+        let now = Date()
+        let signableStr = "\(groupId):\(signer.pubkey):\(memberPubkey):\(Int(now.timeIntervalSince1970))"
+        let signableData = signableStr.data(using: .utf8)!
+        let signature = try signer.sign(data: signableData)
+        
+        let revocation = GroupRevocation(
             groupId: groupId,
             revokerPubkey: signer.pubkey,
             revokedPubkey: memberPubkey,
             createdAt: now,
-            signature: "",
-            reason: reason
-        )
-        
-        // Sign the revocation
-        let signature = try signer.sign(data: revocation.signableData)
-        revocation = GroupRevocation(
-            groupId: revocation.groupId,
-            revokerPubkey: revocation.revokerPubkey,
-            revokedPubkey: revocation.revokedPubkey,
-            createdAt: revocation.createdAt,
             signature: signature,
-            reason: revocation.reason
+            reason: reason
         )
         
         // Store locally
@@ -334,37 +352,48 @@ final class FestivalGroupManager: ObservableObject {
         groupRevocations.append(revocation)
         revocationsByGroup[groupId] = groupRevocations
         
-        // IMPORTANT: Invalidate the membership cache for this group
-        // This forces re-verification of all members
+        // Invalidate cache for this group
         invalidateCache(for: groupId)
+        
+        // Publish to relay
+        Task {
+            do {
+                let event = try revocation.toNostrEvent(signer: signer)
+                try await publishEvent(event)
+            } catch {
+                print("Failed to publish revocation: \(error)")
+            }
+        }
         
         return revocation
     }
     
-    /// Check if a pubkey is in my downstream (I invited them or someone I invited did)
-    private func isInMyDownstream(groupId: String, pubkey: String) -> Bool {
-        guard let signer = signatureProvider else { return false }
+    /// Check if revoker can revoke target (must be upstream in chain)
+    private func canRevoke(revokerPubkey: String, targetPubkey: String, groupId: String) -> Bool {
+        guard let group = groups[groupId] else { return false }
         
-        let invites = invitesByGroup[groupId] ?? []
-        var toCheck = Set<String>()
-        var checked = Set<String>()
+        // Creator can revoke anyone
+        if revokerPubkey == group.creatorPubkey { return true }
         
-        // Start with people I directly invited
-        for invite in invites where invite.inviterPubkey == signer.pubkey {
-            toCheck.insert(invite.inviteePubkey)
+        // Find target's chain and check if revoker is in it
+        let groupInvites = invitesByGroup[groupId] ?? []
+        
+        // Find invite where target is the invitee
+        guard let targetInvite = groupInvites.first(where: { $0.inviteePubkey == targetPubkey }) else {
+            return false
         }
         
-        // BFS through the invite tree
-        while !toCheck.isEmpty {
-            let current = toCheck.removeFirst()
-            if current == pubkey { return true }
-            checked.insert(current)
+        // Walk up the chain to see if revoker is an ancestor
+        var currentInvite: GroupInvite? = targetInvite
+        while let invite = currentInvite {
+            if invite.inviterPubkey == revokerPubkey {
+                return true // Revoker is upstream
+            }
             
-            // Add anyone this person invited
-            for invite in invites where invite.inviterPubkey == current {
-                if !checked.contains(invite.inviteePubkey) {
-                    toCheck.insert(invite.inviteePubkey)
-                }
+            if let parentId = invite.parentInviteId {
+                currentInvite = groupInvites.first { $0.id == parentId }
+            } else {
+                currentInvite = nil
             }
         }
         
@@ -373,80 +402,70 @@ final class FestivalGroupManager: ObservableObject {
     
     // MARK: - Membership Verification (with Caching)
     
-    /// Check if a pubkey is a valid member of a group
-    /// Uses cache for O(1) lookups after first verification
+    /// Check if a pubkey is a member of a group (O(1) after first check)
     func isMember(pubkey: String, groupId: String) -> Bool {
-        guard let group = groups[groupId] else { return false }
-        
-        // Creator is always a member (no verification needed)
-        if pubkey == group.creatorPubkey { return true }
-        
-        // Fast path: Check cache first - O(1)
-        if let verifiedMembers = verifiedMembersCache[groupId],
-           verifiedMembers.contains(pubkey) {
+        // Check cache first (O(1))
+        if let cached = verifiedMembersCache[groupId], cached.contains(pubkey) {
             return true
         }
         
-        // Slow path: Verify the chain - O(depth)
-        // This only happens once per member per cache invalidation
-        if verifyAndCacheMembership(pubkey: pubkey, groupId: groupId) {
+        // Not in cache - need to verify chain
+        guard let group = groups[groupId] else { return false }
+        
+        // Creator is always a member
+        if pubkey == group.creatorPubkey {
+            var members = verifiedMembersCache[groupId] ?? []
+            members.insert(pubkey)
+            verifiedMembersCache[groupId] = members
             return true
         }
         
-        return false
-    }
-    
-    /// Verify a member's chain and cache the result if valid
-    /// Returns true if member is verified, false otherwise
-    private func verifyAndCacheMembership(pubkey: String, groupId: String) -> Bool {
-        guard let group = groups[groupId] else { return false }
+        // Find and verify their chain
+        let groupInvites = invitesByGroup[groupId] ?? []
+        guard let theirInvite = groupInvites.first(where: { $0.inviteePubkey == pubkey }) else {
+            return false // No invite found
+        }
         
-        // Build the invite chain for this pubkey
-        guard let chain = buildInviteChain(for: pubkey, groupId: groupId) else {
+        // Build their chain
+        guard let chain = try? buildChainFor(pubkey: pubkey, groupId: groupId) else {
             return false
         }
         
-        // Verify the chain
+        // Verify chain
         let revocations = revocationsByGroup[groupId] ?? []
-        guard chain.verify(
-            group: group,
-            revocations: revocations,
-            signatureVerifier: signatureVerifier
-        ) != nil else {
+        guard chain.verify(group: group, revocations: revocations, signatureVerifier: signatureVerifier) != nil else {
             return false
         }
         
-        // Cache the verified member
-        var verifiedMembers = verifiedMembersCache[groupId] ?? []
-        verifiedMembers.insert(pubkey)
-        verifiedMembersCache[groupId] = verifiedMembers
+        // Cache the result
+        var members = verifiedMembersCache[groupId] ?? []
+        members.insert(pubkey)
+        verifiedMembersCache[groupId] = members
         
-        // Cache the chain for potential re-verification
-        var chainsCache = verifiedChainsCache[groupId] ?? [:]
-        chainsCache[pubkey] = chain
-        verifiedChainsCache[groupId] = chainsCache
+        var chains = verifiedChainsCache[groupId] ?? [:]
+        chains[pubkey] = chain
+        verifiedChainsCache[groupId] = chains
         
         return true
     }
     
-    /// Build an invite chain for a given pubkey by walking back through invites
-    private func buildInviteChain(for pubkey: String, groupId: String) -> InviteChain? {
-        let invites = invitesByGroup[groupId] ?? []
+    /// Build chain for any pubkey (not just self)
+    private func buildChainFor(pubkey: String, groupId: String) throws -> InviteChain {
+        let groupInvites = invitesByGroup[groupId] ?? []
         
-        // Find the invite where this pubkey is the invitee
-        guard let finalInvite = invites.first(where: { $0.inviteePubkey == pubkey }) else {
-            return nil
+        // Find the invite where this pubkey is invitee
+        guard let theirInvite = groupInvites.first(where: { $0.inviteePubkey == pubkey }) else {
+            throw FestivalGroupError.groupNotFound
         }
         
-        // Walk back through parent invites to build the chain
         var chain: [GroupInvite] = []
-        var currentInvite: GroupInvite? = finalInvite
+        var currentInvite: GroupInvite? = theirInvite
         
         while let inv = currentInvite {
-            chain.insert(inv, at: 0)  // Build from root to leaf
+            chain.insert(inv, at: 0)
             
             if let parentId = inv.parentInviteId {
-                currentInvite = invites.first { $0.id == parentId }
+                currentInvite = groupInvites.first { $0.id == parentId }
             } else {
                 currentInvite = nil
             }
@@ -455,31 +474,21 @@ final class FestivalGroupManager: ObservableObject {
         return InviteChain(groupId: groupId, memberPubkey: pubkey, chain: chain)
     }
     
-    /// Invalidate the membership cache for a group
-    /// Called when a revocation is received
+    /// Invalidate cache for a group (called on revocation)
     private func invalidateCache(for groupId: String) {
         verifiedMembersCache.removeValue(forKey: groupId)
         verifiedChainsCache.removeValue(forKey: groupId)
         lastRevocationTime[groupId] = Date()
-        
-        // Re-add creator to cache (always valid)
-        if let group = groups[groupId] {
-            verifiedMembersCache[groupId] = [group.creatorPubkey]
-        }
     }
     
-    /// Get all valid members of a group
-    /// Note: This verifies all members, so it populates the cache
+    /// Get all verified members of a group
     func getMembers(groupId: String) -> [String] {
         guard let group = groups[groupId] else { return [] }
         
-        var members = Set<String>()
-        members.insert(group.creatorPubkey)
+        var members: Set<String> = [group.creatorPubkey]
         
-        let invites = invitesByGroup[groupId] ?? []
-        
-        // Check each invitee
-        for invite in invites {
+        let groupInvites = invitesByGroup[groupId] ?? []
+        for invite in groupInvites {
             if isMember(pubkey: invite.inviteePubkey, groupId: groupId) {
                 members.insert(invite.inviteePubkey)
             }
@@ -488,186 +497,6 @@ final class FestivalGroupManager: ObservableObject {
         return Array(members)
     }
     
-    /// Get cache statistics for debugging/monitoring
-    func getCacheStats(groupId: String) -> (cached: Int, total: Int) {
-        let cached = verifiedMembersCache[groupId]?.count ?? 0
-        let total = (invitesByGroup[groupId]?.count ?? 0) + 1  // +1 for creator
-        return (cached, total)
-    }
-    
-    // MARK: - Messaging
-    
-    /// Send a message to a group channel
-    func sendMessage(
-        content: String,
-        groupId: String,
-        channelId: String
-    ) throws -> NostrEvent {
-        guard let signer = signatureProvider else {
-            throw FestivalGroupError.encryptionNotConfigured
-        }
-        
-        guard let myChain = myChains[groupId] else {
-            throw FestivalGroupError.notAuthorizedToInvite
-        }
-        
-        // Encrypt the content (currently cleartext, but modular)
-        let encryptedContent = try encryptor.encrypt(
-            content: content,
-            groupId: groupId,
-            senderChain: myChain
-        )
-        
-        // Build message payload
-        let payload = GroupMessagePayload(
-            content: encryptedContent,
-            channelId: channelId,
-            senderChainDepth: myChain.chain.count
-        )
-        
-        let encoder = JSONEncoder()
-        let payloadData = try encoder.encode(payload)
-        let payloadString = String(data: payloadData, encoding: .utf8) ?? ""
-        
-        // Create ephemeral event
-        let tags: [[String]] = [
-            ["group", groupId],
-            ["channel", channelId]
-        ]
-        
-        return NostrEvent(
-            pubkey: signer.pubkey,
-            createdAt: Date(),
-            kind: .groupMessage,
-            tags: tags,
-            content: payloadString
-        )
-    }
-    
-    // MARK: - Sync with Relays
-    
-    /// Subscribe to updates for a group
-    func subscribeToGroup(_ groupId: String, relayUrls: [String]? = nil) {
-        // Subscribe to invites for this group
-        var inviteFilter = NostrFilter()
-        inviteFilter.kinds = [NostrProtocol.EventKind.groupInvite.rawValue]
-        // Tag filter for group
-        
-        NostrRelayManager.shared.subscribe(
-            filter: inviteFilter,
-            id: "group-invites-\(groupId)",
-            relayUrls: relayUrls
-        ) { [weak self] event in
-            Task { @MainActor in
-                self?.handleIncomingInvite(event)
-            }
-        }
-        
-        // Subscribe to revocations
-        var revokeFilter = NostrFilter()
-        revokeFilter.kinds = [NostrProtocol.EventKind.groupRevoke.rawValue]
-        
-        NostrRelayManager.shared.subscribe(
-            filter: revokeFilter,
-            id: "group-revokes-\(groupId)",
-            relayUrls: relayUrls
-        ) { [weak self] event in
-            Task { @MainActor in
-                self?.handleIncomingRevocation(event)
-            }
-        }
-        
-        // Subscribe to messages
-        var messageFilter = NostrFilter()
-        messageFilter.kinds = [NostrProtocol.EventKind.groupMessage.rawValue]
-        
-        NostrRelayManager.shared.subscribe(
-            filter: messageFilter,
-            id: "group-messages-\(groupId)",
-            relayUrls: relayUrls
-        ) { [weak self] event in
-            Task { @MainActor in
-                self?.handleIncomingMessage(event)
-            }
-        }
-    }
-    
-    private func handleIncomingInvite(_ event: NostrEvent) {
-        guard let invite = try? GroupInvite.from(event: event) else { return }
-        
-        // Store the invite
-        var groupInvites = invitesByGroup[invite.groupId] ?? []
-        if !groupInvites.contains(where: { $0.id == invite.id }) {
-            groupInvites.append(invite)
-            invitesByGroup[invite.groupId] = groupInvites
-        }
-        
-        // If it's for me, add to pending
-        if invite.inviteePubkey == signatureProvider?.pubkey {
-            if !pendingInvites.contains(where: { $0.id == invite.id }) {
-                pendingInvites.append(invite)
-            }
-        }
-    }
-    
-    private func handleIncomingRevocation(_ event: NostrEvent) {
-        guard let revocation = try? GroupRevocation.from(event: event) else { return }
-        
-        // Store the revocation
-        var groupRevocations = revocationsByGroup[revocation.groupId] ?? []
-        if !groupRevocations.contains(where: { $0.id == revocation.id }) {
-            groupRevocations.append(revocation)
-            revocationsByGroup[revocation.groupId] = groupRevocations
-        }
-        
-        // CRITICAL: Invalidate cache when revocation arrives
-        // This ensures revoked members are re-verified
-        invalidateCache(for: revocation.groupId)
-        
-        // If I'm revoked, remove from joined groups
-        if revocation.revokedPubkey == signatureProvider?.pubkey {
-            joinedGroups.removeAll { $0.id == revocation.groupId }
-            myChains.removeValue(forKey: revocation.groupId)
-        }
-        
-        // Invalidate any chains that depend on the revoked user
-        refreshMyMemberships()
-    }
-    
-    private func handleIncomingMessage(_ event: NostrEvent) {
-        // Verify sender is a member (uses cache - O(1) after first check)
-        guard let groupTag = event.tags.first(where: { $0.first == "group" }),
-              groupTag.count > 1 else { return }
-        
-        let groupId = groupTag[1]
-        guard isMember(pubkey: event.pubkey, groupId: groupId) else {
-            // Sender not authorized - drop message
-            return
-        }
-        
-        // Decrypt and process message
-        // (Delegate to message handler)
-    }
-    
-    private func refreshMyMemberships() {
-        // Re-verify all my chains against current revocations
-        for (groupId, chain) in myChains {
-            guard let group = groups[groupId] else {
-                myChains.removeValue(forKey: groupId)
-                continue
-            }
-            
-            let revocations = revocationsByGroup[groupId] ?? []
-            if chain.verify(group: group, revocations: revocations, signatureVerifier: signatureVerifier) == nil {
-                // My chain is no longer valid
-                myChains.removeValue(forKey: groupId)
-                joinedGroups.removeAll { $0.id == groupId }
-            }
-        }
-    }
-}
-
-    
     // MARK: - Messaging
     
     /// Current user's pubkey (if configured)
@@ -675,24 +504,19 @@ final class FestivalGroupManager: ObservableObject {
         signatureProvider?.pubkey
     }
     
-    /// Message subscription handlers by group+channel
-    private var messageHandlers: [String: (GroupMessage) -> Void] = [:]
-    
-    /// Cached messages by group+channel
-    private var messageCache: [String: [GroupMessage]] = [:]
-    
     /// Load messages for a channel
     func loadMessages(groupId: String, channelId: String) async -> [GroupMessage] {
         let key = "\(groupId):\(channelId)"
         
         // Return cached if available
-        if let cached = messageCache[key] {
+        if let cached = messageCache[key], !cached.isEmpty {
             return cached
         }
         
-        // TODO: Fetch from relay with filter
-        // For now, return empty and rely on subscription
-        return []
+        // Fetch from relay
+        await fetchMessagesFromRelay(groupId: groupId, channelId: channelId)
+        
+        return messageCache[key] ?? []
     }
     
     /// Subscribe to new messages for a channel
@@ -701,7 +525,7 @@ final class FestivalGroupManager: ObservableObject {
         messageHandlers[key] = handler
         
         // Subscribe to relay for this group's messages
-        subscribeToRelayForMessages(groupId: groupId, channelId: channelId)
+        subscribeToChannelMessages(groupId: groupId, channelId: channelId)
     }
     
     /// Send a message to a group channel
@@ -727,7 +551,7 @@ final class FestivalGroupManager: ObservableObject {
         
         // Convert to Nostr event and publish
         let event = try message.toNostrEvent(signer: signer)
-        try await publishToRelay(event)
+        try await publishEvent(event)
         
         // Cache locally
         let key = "\(groupId):\(channelId)"
@@ -740,39 +564,226 @@ final class FestivalGroupManager: ObservableObject {
     
     // MARK: - Relay Integration
     
-    private func subscribeToRelayForMessages(groupId: String, channelId: String) {
-        // Create filter for this group's messages
-        let filter = GroupNostrFilter(groupId: groupId)
+    /// Stored identity for signing
+    private var identity: NostrIdentity?
+    
+    /// Publish a Nostr event to relays
+    private func publishEvent(_ event: NostrEvent) async throws {
+        guard let identity = identity else {
+            throw FestivalGroupError.encryptionNotConfigured
+        }
         
-        // Subscribe via NostrRelayManager
-        // This would integrate with the existing relay infrastructure
-        Task {
-            await subscribeWithFilter(filter.messageFilter, groupId: groupId, channelId: channelId)
+        // Sign the event with our identity
+        let signingKey = try identity.schnorrSigningKey()
+        let signedEvent = try event.sign(with: signingKey)
+        
+        // Use NostrRelayManager to send
+        await MainActor.run {
+            NostrRelayManager.shared.sendEvent(signedEvent)
         }
     }
     
-    private func subscribeWithFilter(_ filter: [String: Any], groupId: String, channelId: String) async {
-        // Integration point with NostrRelayManager
-        // The relay manager would call handleIncomingMessage when events arrive
+    /// Subscribe to invites addressed to me
+    private func subscribeToMyInvites() {
+        guard let pubkey = signatureProvider?.pubkey else { return }
         
-        // For now, this is a placeholder for the relay subscription
-        // In production, this would:
-        // 1. Connect to the group's relay(s)
-        // 2. Send REQ with the filter
-        // 3. Handle incoming EVENT messages
+        // Create filter for invites tagged with my pubkey
+        var filter = NostrFilter()
+        filter.kinds = [GroupEventKind.groupInvite]
+        filter.setTagFilter("p", values: [pubkey])
+        
+        let subscriptionId = "group-invites-\(pubkey.prefix(8))"
+        
+        NostrRelayManager.shared.subscribe(
+            filter: filter,
+            id: subscriptionId,
+            handler: { [weak self] event in
+                Task { @MainActor in
+                    self?.handleIncomingInvite(event)
+                }
+            }
+        )
+        
+        activeSubscriptions["my-invites"] = subscriptionId
     }
     
-    private func publishToRelay(_ event: NostrEvent) async throws {
-        // Integration point with NostrRelayManager
-        // Would publish the event to the group's relay(s)
+    /// Subscribe to all activity for a group
+    private func subscribeToGroup(groupId: String) {
+        // Subscribe to invites for this group
+        var inviteFilter = NostrFilter()
+        inviteFilter.kinds = [GroupEventKind.groupInvite]
+        inviteFilter.setTagFilter("group", values: [groupId])
         
-        // For now, placeholder
-        // In production: NostrRelayManager.shared.publish(event)
+        let inviteSubId = "group-\(groupId.prefix(8))-invites"
+        NostrRelayManager.shared.subscribe(
+            filter: inviteFilter,
+            id: inviteSubId,
+            handler: { [weak self] event in
+                Task { @MainActor in
+                    self?.handleIncomingInvite(event)
+                }
+            }
+        )
+        activeSubscriptions["invites-\(groupId)"] = inviteSubId
+        
+        // Subscribe to revocations for this group
+        var revokeFilter = NostrFilter()
+        revokeFilter.kinds = [GroupEventKind.groupRevoke]
+        revokeFilter.setTagFilter("group", values: [groupId])
+        
+        let revokeSubId = "group-\(groupId.prefix(8))-revokes"
+        NostrRelayManager.shared.subscribe(
+            filter: revokeFilter,
+            id: revokeSubId,
+            handler: { [weak self] event in
+                Task { @MainActor in
+                    self?.handleIncomingRevocation(event)
+                }
+            }
+        )
+        activeSubscriptions["revokes-\(groupId)"] = revokeSubId
     }
     
-    /// Handle incoming message from relay
-    func handleRelayMessage(_ event: NostrEvent) {
-        guard event.kind == .groupMessage else { return }
+    /// Subscribe to messages for a specific channel
+    private func subscribeToChannelMessages(groupId: String, channelId: String) {
+        var filter = NostrFilter()
+        filter.kinds = [GroupEventKind.groupMessage]
+        filter.setTagFilter("group", values: [groupId])
+        filter.setTagFilter("channel", values: [channelId])
+        filter.limit = 100  // Last 100 messages
+        
+        let subscriptionId = "group-\(groupId.prefix(8))-\(channelId)"
+        
+        NostrRelayManager.shared.subscribe(
+            filter: filter,
+            id: subscriptionId,
+            handler: { [weak self] event in
+                Task { @MainActor in
+                    self?.handleIncomingMessage(event)
+                }
+            }
+        )
+        
+        activeSubscriptions["\(groupId):\(channelId)"] = subscriptionId
+    }
+    
+    /// Fetch historical messages from relay
+    private func fetchMessagesFromRelay(groupId: String, channelId: String) async {
+        // The subscription handler will populate the cache
+        subscribeToChannelMessages(groupId: groupId, channelId: channelId)
+        
+        // Give relay time to send historical messages
+        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+    }
+    
+    /// Fetch a group definition from relay
+    private func fetchGroup(id: String) async {
+        var filter = NostrFilter()
+        filter.kinds = [GroupEventKind.festivalGroup]
+        filter.setTagFilter("d", values: [id])
+        filter.limit = 1
+        
+        let subscriptionId = "fetch-group-\(id.prefix(8))"
+        
+        NostrRelayManager.shared.subscribe(
+            filter: filter,
+            id: subscriptionId,
+            handler: { [weak self] event in
+                Task { @MainActor in
+                    self?.handleIncomingGroup(event)
+                }
+            },
+            onEOSE: {
+                // Unsubscribe after fetching
+                NostrRelayManager.shared.unsubscribe(id: subscriptionId)
+            }
+        )
+    }
+    
+    // MARK: - Event Handlers
+    
+    /// Handle incoming group definition
+    private func handleIncomingGroup(_ event: NostrEvent) {
+        guard event.kind == GroupEventKind.festivalGroup else { return }
+        
+        do {
+            let group = try FestivalGroup.from(event: event)
+            groups[group.id] = group
+            
+            // Check if this is one of my groups
+            if group.creatorPubkey == signatureProvider?.pubkey {
+                if !myGroups.contains(where: { $0.id == group.id }) {
+                    myGroups.append(group)
+                }
+            }
+        } catch {
+            print("Failed to parse group: \(error)")
+        }
+    }
+    
+    /// Handle incoming invite
+    private func handleIncomingInvite(_ event: NostrEvent) {
+        guard event.kind == GroupEventKind.groupInvite else { return }
+        
+        do {
+            let invite = try GroupInvite.from(event: event)
+            
+            // Store invite
+            var groupInvites = invitesByGroup[invite.groupId] ?? []
+            if !groupInvites.contains(where: { $0.id == invite.id }) {
+                groupInvites.append(invite)
+                invitesByGroup[invite.groupId] = groupInvites
+            }
+            
+            // Check if this invite is for me
+            if invite.inviteePubkey == signatureProvider?.pubkey {
+                if !pendingInvites.contains(where: { $0.id == invite.id }) {
+                    pendingInvites.append(invite)
+                    
+                    // Fetch the group if we don't have it
+                    if groups[invite.groupId] == nil {
+                        Task { await fetchGroup(id: invite.groupId) }
+                    }
+                }
+            }
+        } catch {
+            print("Failed to parse invite: \(error)")
+        }
+    }
+    
+    /// Handle incoming revocation
+    private func handleIncomingRevocation(_ event: NostrEvent) {
+        guard event.kind == GroupEventKind.groupRevoke else { return }
+        
+        do {
+            let revocation = try GroupRevocation.from(event: event)
+            
+            // Store revocation
+            var groupRevocations = revocationsByGroup[revocation.groupId] ?? []
+            if !groupRevocations.contains(where: { $0.id == revocation.id }) {
+                groupRevocations.append(revocation)
+                revocationsByGroup[revocation.groupId] = groupRevocations
+            }
+            
+            // CRITICAL: Invalidate cache when revocation arrives
+            invalidateCache(for: revocation.groupId)
+            
+            // If I'm revoked, remove from joined groups
+            if revocation.revokedPubkey == signatureProvider?.pubkey {
+                joinedGroups.removeAll { $0.id == revocation.groupId }
+                myChains.removeValue(forKey: revocation.groupId)
+            }
+            
+            // Refresh memberships
+            refreshMyMemberships()
+        } catch {
+            print("Failed to parse revocation: \(error)")
+        }
+    }
+    
+    /// Handle incoming message
+    private func handleIncomingMessage(_ event: NostrEvent) {
+        guard event.kind == GroupEventKind.groupMessage else { return }
         
         guard let groupTag = event.tags.first(where: { $0.first == "group" }),
               groupTag.count > 1,
@@ -782,9 +793,9 @@ final class FestivalGroupManager: ObservableObject {
         let groupId = groupTag[1]
         let channelId = channelTag[1]
         
-        // Verify sender is a member
+        // Verify sender is a member (uses cache - O(1) after first check)
         guard isMember(pubkey: event.pubkey, groupId: groupId) else {
-            return // Unauthorized sender
+            return // Unauthorized sender - drop message
         }
         
         do {
@@ -795,6 +806,8 @@ final class FestivalGroupManager: ObservableObject {
             var messages = messageCache[key] ?? []
             if !messages.contains(where: { $0.id == message.id }) {
                 messages.append(message)
+                // Sort by date
+                messages.sort { $0.createdAt < $1.createdAt }
                 messageCache[key] = messages
                 
                 // Notify handler
@@ -804,7 +817,57 @@ final class FestivalGroupManager: ObservableObject {
             print("Failed to parse group message: \(error)")
         }
     }
+    
+    /// Refresh membership status for all my groups
+    private func refreshMyMemberships() {
+        for (groupId, chain) in myChains {
+            guard let group = groups[groupId] else {
+                myChains.removeValue(forKey: groupId)
+                continue
+            }
+            
+            let revocations = revocationsByGroup[groupId] ?? []
+            if chain.verify(group: group, revocations: revocations, signatureVerifier: signatureVerifier) == nil {
+                // My chain is no longer valid
+                myChains.removeValue(forKey: groupId)
+                joinedGroups.removeAll { $0.id == groupId }
+            }
+        }
+    }
+    
+    /// Cleanup subscriptions when leaving a group
+    func leaveGroup(groupId: String) {
+        // Unsubscribe from relay
+        if let subId = activeSubscriptions["invites-\(groupId)"] {
+            NostrRelayManager.shared.unsubscribe(id: subId)
+        }
+        if let subId = activeSubscriptions["revokes-\(groupId)"] {
+            NostrRelayManager.shared.unsubscribe(id: subId)
+        }
+        
+        // Clean up message subscriptions
+        for (key, subId) in activeSubscriptions where key.hasPrefix(groupId) {
+            NostrRelayManager.shared.unsubscribe(id: subId)
+            activeSubscriptions.removeValue(forKey: key)
+        }
+        
+        // Remove from local state
+        joinedGroups.removeAll { $0.id == groupId }
+        myChains.removeValue(forKey: groupId)
+        messageCache = messageCache.filter { !$0.key.hasPrefix(groupId) }
+    }
+}
 
+// MARK: - NostrFilter Extension for Tag Filters
+
+extension NostrFilter {
+    /// Set a tag filter (e.g., #p, #group, #d)
+    mutating func setTagFilter(_ tag: String, values: [String]) {
+        if tagFilters == nil {
+            tagFilters = [:]
+        }
+        tagFilters?[tag] = values
+    }
 }
 
 // MARK: - Message Payload
