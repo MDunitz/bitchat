@@ -153,13 +153,16 @@ struct InviteChain: Codable {
 
 // MARK: - Nostr Event Kinds for Groups
 
-extension NostrEvent.Kind {
-    static let festivalGroup = NostrEvent.Kind(rawValue: 30078)     // Replaceable: Group definition
-    static let groupInvite = NostrEvent.Kind(rawValue: 30079)       // Replaceable: Invite
-    static let groupRevoke = NostrEvent.Kind(rawValue: 30080)       // Replaceable: Revocation
-    static let groupMessage = NostrEvent.Kind(rawValue: 20078)      // Ephemeral: Group chat message
-    static let groupEpoch = NostrEvent.Kind(rawValue: 30081)        // Replaceable: Membership epoch
+extension NostrProtocol.EventKind {
+    static let festivalGroup = NostrProtocol.EventKind(rawValue: 30078)!     // Replaceable: Group definition
+    static let groupInvite = NostrProtocol.EventKind(rawValue: 30079)!       // Replaceable: Invite
+    static let groupRevoke = NostrProtocol.EventKind(rawValue: 30080)!       // Replaceable: Revocation
+    static let groupMessage = NostrProtocol.EventKind(rawValue: 20078)!      // Ephemeral: Group chat message
+    static let groupEpoch = NostrProtocol.EventKind(rawValue: 30081)!        // Replaceable: Membership epoch
 }
+
+// Convenience typealias
+typealias EventKind = NostrProtocol.EventKind
 
 // MARK: - Signature Protocols
 
@@ -457,10 +460,16 @@ enum FestivalGroupError: Error {
 struct GroupNostrFilter {
     let groupId: String
     
+    /// Event kind raw values
+    private static let festivalGroupKind = 30078
+    private static let groupInviteKind = 30079
+    private static let groupRevokeKind = 30080
+    private static let groupMessageKind = 20078
+    
     /// Filter for group definition updates
     var groupFilter: [String: Any] {
         [
-            "kinds": [NostrEvent.Kind.festivalGroup.rawValue],
+            "kinds": [Self.festivalGroupKind],
             "#d": [groupId]
         ]
     }
@@ -468,7 +477,7 @@ struct GroupNostrFilter {
     /// Filter for invites to this group
     var inviteFilter: [String: Any] {
         [
-            "kinds": [NostrEvent.Kind.groupInvite.rawValue],
+            "kinds": [Self.groupInviteKind],
             "#group": [groupId]
         ]
     }
@@ -476,7 +485,7 @@ struct GroupNostrFilter {
     /// Filter for revocations in this group
     var revocationFilter: [String: Any] {
         [
-            "kinds": [NostrEvent.Kind.groupRevoke.rawValue],
+            "kinds": [Self.groupRevokeKind],
             "#group": [groupId]
         ]
     }
@@ -484,7 +493,7 @@ struct GroupNostrFilter {
     /// Filter for messages in this group
     var messageFilter: [String: Any] {
         [
-            "kinds": [NostrEvent.Kind.groupMessage.rawValue],
+            "kinds": [Self.groupMessageKind],
             "#group": [groupId]
         ]
     }
@@ -492,7 +501,7 @@ struct GroupNostrFilter {
     /// Filter for invites addressed to a specific pubkey
     static func invitesForUser(pubkey: String) -> [String: Any] {
         [
-            "kinds": [NostrEvent.Kind.groupInvite.rawValue],
+            "kinds": [groupInviteKind],
             "#p": [pubkey]
         ]
     }
