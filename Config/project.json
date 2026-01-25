@@ -1,0 +1,56 @@
+{
+  "project": {
+    "name": "FestMest",
+    "display_name": "FestMest",
+    "bundle_id_prefix": "com.festmest",
+    "organization": "FestMest",
+    "xcode_project": "FestMest.xcodeproj",
+    "schemes": {
+      "ios": "FestMest (iOS)",
+      "macos": "FestMest (macOS)"
+    }
+  },
+  "test_matrix": {
+    "default_simulator": "iPhone 15 Pro",
+    "ios_simulators": [
+      {
+        "name": "iPhone 15 Pro",
+        "os_version": "17.2",
+        "enabled": true
+      },
+      {
+        "name": "iPhone 15",
+        "os_version": "17.2",
+        "enabled": true
+      },
+      {
+        "name": "iPhone 14",
+        "os_version": "16.4",
+        "enabled": true
+      },
+      {
+        "name": "iPhone SE (3rd generation)",
+        "os_version": "17.2",
+        "enabled": true
+      },
+      {
+        "name": "iPhone 13 mini",
+        "os_version": "15.5",
+        "enabled": false,
+        "comment": "Enable for iOS 15 testing if needed"
+      }
+    ],
+    "macos_destinations": [
+      {
+        "name": "My Mac",
+        "arch": "arm64",
+        "enabled": true
+      }
+    ]
+  },
+  "build": {
+    "minimum_ios": "16.0",
+    "minimum_macos": "13.0",
+    "swift_version": "5.9"
+  }
+}
