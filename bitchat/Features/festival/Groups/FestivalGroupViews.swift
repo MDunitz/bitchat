@@ -664,26 +664,222 @@ struct MemberRow: View {
     }
 }
 
+
 // MARK: - Group Channel View (Chat)
 
+/// Chat view for a specific channel within a group
+/// Integrates with the existing chat infrastructure
 struct GroupChannelView: View {
     let group: FestivalGroup
     let channel: FestivalGroup.GroupChannel
     
+    @EnvironmentObject var chatViewModel: ChatViewModel
+    @ObservedObject var groupManager = FestivalGroupManager.shared
+    @Environment(\.colorScheme) var colorScheme
+    
+    @State private var messageText = ""
+    @State private var messages: [GroupMessage] = []
+    @State private var isLoading = true
+    @FocusState private var isInputFocused: Bool
+    
+    private var textColor: Color {
+        colorScheme == .dark ? Color(red: 0.4, green: 0.4, blue: 0.7) : Color(red: 0.102, green: 0.102, blue: 0.306)
+    }
+    
     var body: some View {
-        VStack {
-            // Placeholder for actual chat implementation
-            Text("Chat for \(channel.name)")
-                .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            // Message list
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        if isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding()
+                        } else if messages.isEmpty {
+                            emptyStateView
+                        } else {
+                            ForEach(messages) { message in
+                                GroupMessageBubble(
+                                    message: message,
+                                    isOwnMessage: message.senderPubkey == groupManager.myPubkey
+                                )
+                                .id(message.id)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: messages.count) { _ in
+                    if let lastMessage = messages.last {
+                        withAnimation {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
             
-            Spacer()
+            Divider()
             
-            // Would integrate with existing ChatView/ChatViewModel
-            Text("Chat integration goes here")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            // Input bar
+            inputBar
         }
         .navigationTitle(channel.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button(action: { loadMessages() }) {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    Button(action: {}) {
+                        Label("Channel Info", systemImage: "info.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
+        .onAppear {
+            loadMessages()
+            subscribeToChannel()
+        }
+    }
+    
+    private var emptyStateView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: channel.icon ?? "bubble.left.and.bubble.right")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+            
+            Text("No messages yet")
+                .font(.headline)
+                .foregroundColor(.secondary)
+            
+            Text("Be the first to say something in \(channel.name)")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+    
+    private var inputBar: some View {
+        HStack(spacing: 12) {
+            TextField("Message \(channel.name)", text: $messageText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(20)
+                .focused($isInputFocused)
+                .lineLimit(1...5)
+                .submitLabel(.send)
+                .onSubmit(sendMessage)
+            
+            Button(action: sendMessage) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundColor(messageText.isEmpty ? .secondary : textColor)
+            }
+            .disabled(messageText.isEmpty)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(colorScheme == .dark ? Color.black : Color.white)
+    }
+    
+    private func loadMessages() {
+        isLoading = true
+        Task {
+            // Load messages from group manager
+            let loaded = await groupManager.loadMessages(groupId: group.id, channelId: channel.id)
+            await MainActor.run {
+                messages = loaded
+                isLoading = false
+            }
+        }
+    }
+    
+    private func subscribeToChannel() {
+        // Subscribe to new messages for this channel
+        groupManager.subscribeToGroupMessages(groupId: group.id, channelId: channel.id) { newMessage in
+            // Avoid duplicates
+            if !messages.contains(where: { $0.id == newMessage.id }) {
+                messages.append(newMessage)
+            }
+        }
+    }
+    
+    private func sendMessage() {
+        let text = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        
+        messageText = ""
+        isInputFocused = false
+        
+        Task {
+            do {
+                let message = try await groupManager.sendMessage(
+                    groupId: group.id,
+                    channelId: channel.id,
+                    content: text
+                )
+                await MainActor.run {
+                    messages.append(message)
+                }
+            } catch {
+                print("Failed to send message: \(error)")
+                // Restore message on failure
+                await MainActor.run {
+                    messageText = text
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Group Message Bubble
+
+struct GroupMessageBubble: View {
+    let message: GroupMessage
+    let isOwnMessage: Bool
+    
+    @Environment(\.colorScheme) var colorScheme
+    
+    private var bubbleColor: Color {
+        if isOwnMessage {
+            return colorScheme == .dark ? Color(red: 0.3, green: 0.3, blue: 0.5) : Color(red: 0.8, green: 0.8, blue: 0.95)
+        } else {
+            return colorScheme == .dark ? Color(red: 0.2, green: 0.2, blue: 0.25) : Color(red: 0.9, green: 0.9, blue: 0.92)
+        }
+    }
+    
+    var body: some View {
+        HStack {
+            if isOwnMessage { Spacer(minLength: 60) }
+            
+            VStack(alignment: isOwnMessage ? .trailing : .leading, spacing: 4) {
+                if !isOwnMessage {
+                    Text(message.senderPubkey.prefix(8) + "...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Text(message.content)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(bubbleColor)
+                    .cornerRadius(16)
+                
+                Text(message.createdAt, style: .time)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            
+            if !isOwnMessage { Spacer(minLength: 60) }
+        }
     }
 }
 
