@@ -858,18 +858,6 @@ final class FestivalGroupManager: ObservableObject {
     }
 }
 
-// MARK: - NostrFilter Extension for Tag Filters
-
-extension NostrFilter {
-    /// Set a tag filter (e.g., #p, #group, #d)
-    mutating func setTagFilter(_ tag: String, values: [String]) {
-        if tagFilters == nil {
-            tagFilters = [:]
-        }
-        tagFilters?[tag] = values
-    }
-}
-
 // MARK: - Message Payload
 
 struct GroupMessagePayload: Codable {
