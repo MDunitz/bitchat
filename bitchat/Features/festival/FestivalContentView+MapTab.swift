@@ -238,6 +238,48 @@ struct FestivalInfoViewWithLocation: View {
     }
 }
 
+// MARK: - Festival Map Tab View
+
+/// Map tab showing festival venue with stages and friend locations
+/// This is the view used in FestivalContentView's tabContent(for:)
+struct FestivalMapTabView: View {
+    @Environment(\.colorScheme) var colorScheme
+    @ObservedObject var scheduleManager = FestivalScheduleManager.shared
+    @ObservedObject var locationService = FriendLocationService.shared
+    
+    private var textColor: Color {
+        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+    }
+    
+    var body: some View {
+        VStack {
+            if let festival = scheduleManager.festivalData?.festival {
+                // Friend location toggle
+                FriendLocationToggle()
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                
+                // Map view
+                FriendMapView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 16) {
+                    Image(systemName: "map")
+                        .font(.system(size: 48))
+                        .foregroundColor(textColor.opacity(0.5))
+                    Text("No festival map available")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+}
+
+/// Alias for FestivalMapTabView (used in FestivalMainViewWithMap)
+typealias FestivalMapTab = FestivalMapTabView
+
 // MARK: - Preview
 
 #if DEBUG

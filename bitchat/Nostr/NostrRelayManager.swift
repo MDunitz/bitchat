@@ -913,6 +913,14 @@ struct NostrFilter: Encodable {
         filter.limit = limit
         return filter
     }
+    
+    /// Set a tag filter (e.g., #p, #group, #d) - public API for external use
+    mutating func setTagFilter(_ tag: String, values: [String]) {
+        if tagFilters == nil {
+            tagFilters = [:]
+        }
+        tagFilters?[tag] = values
+    }
 }
 
 // Dynamic coding key for tag filters
