@@ -10,7 +10,7 @@ import Tor
 import SwiftUI
 import UserNotifications
 
-@main
+// Note: @main is in FestMestApp.swift - this file provides shared delegate classes
 struct BitchatApp: App {
     static let bundleID = Bundle.main.bundleIdentifier ?? "chat.bitchat"
     static let groupID = "group.\(bundleID)"
