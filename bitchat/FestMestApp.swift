@@ -188,5 +188,4 @@ struct FestMestApp: App {
     }
 }
 
-// Note: AppDelegate, MacAppDelegate, and NotificationDelegate are defined in BitchatApp.swift
-// to avoid duplicate class declarations. Both app entry points share these classes.
+// Note: AppDelegate, MacAppDelegate, and NotificationDelegate are defined in AppDelegates.swift
