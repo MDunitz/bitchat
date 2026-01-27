@@ -11,7 +11,7 @@
 import SwiftUI
 
 /// Main content wrapper that shows either normal chat or festival mode
-/// This view should replace ContentView() in BitchatApp.swift
+/// This view should replace ContentView() in FestMestApp.swift
 struct FestivalContentView: View {
     @EnvironmentObject var viewModel: ChatViewModel
     @ObservedObject var festivalManager = FestivalModeManager.shared
