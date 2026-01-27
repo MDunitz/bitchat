@@ -96,7 +96,7 @@ struct FestivalMainView: View {
         case .chat:
             ContentView()
         case .map:
-            FestivalMapTabView()
+            FestivalMapTab()
         case .info:
             FestivalInfoView()
         case .friends:
