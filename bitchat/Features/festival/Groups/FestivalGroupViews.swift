@@ -249,11 +249,11 @@ struct CreateGroupView: View {
                 Section {
                     ForEach(channels) { channel in
                         HStack {
-                            Image(systemName: channel.icon)
+                            Image(systemName: channel.icon ?? "bubble.left")
                             VStack(alignment: .leading) {
                                 Text(channel.name)
                                     .font(.headline)
-                                Text(channel.description)
+                                Text(channel.description ?? "")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -441,12 +441,12 @@ struct FestivalGroupDetailView: View {
                 ForEach(group.channels) { channel in
                     NavigationLink(destination: GroupChannelView(group: group, channel: channel)) {
                         HStack {
-                            Image(systemName: channel.icon)
+                            Image(systemName: channel.icon ?? "bubble.left")
                                 .frame(width: 24)
                             VStack(alignment: .leading) {
                                 Text(channel.name)
                                     .font(.headline)
-                                Text(channel.description)
+                                Text(channel.description ?? "")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -554,7 +554,7 @@ struct InviteMemberView: View {
             : pubkeyInput
         
         do {
-            createdInvite = try groupManager.createInvite(
+            createdInvite = try groupManager.invite(
                 groupId: group.id,
                 inviteePubkey: pubkey
             )
